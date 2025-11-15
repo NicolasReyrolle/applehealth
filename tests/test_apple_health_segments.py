@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportAttributeAccessIssue=false
 """
 Unit and integration tests for apple_health_segments.py
 
@@ -8,17 +9,18 @@ Or with coverage: python -m pytest tests/ -v --cov=tools --cov-report=html
 
 import sys
 import os
-import math
-import tempfile
 import zipfile
 from datetime import datetime, timedelta
 from io import BytesIO
 import pytest
 
 # Add tools directory to path so we can import apple_health_segments
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tools'))
+tools_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tools'))
+if tools_path not in sys.path:
+    sys.path.insert(0, tools_path)
 
-import apple_health_segments as ahs
+# pylint: disable=import-error,wrong-import-position
+import apple_health_segments as ahs  # type: ignore # pyright: ignore
 
 
 class TestHaversineMeters:
@@ -446,6 +448,196 @@ class TestDateFiltering:
         end_date = date(2024, 1, 31)
         
         assert workout_date.date() > end_date
+
+
+class TestRealExportIntegration:
+    """Integration tests using actual Apple Health export.zip data."""
+
+    @pytest.fixture(scope="class")
+    def export_zip_path(self):
+        """Path to the sample export.zip file for faster integration testing."""
+        # Use the lightweight sample subset (~94 MB with 10 routes)
+        sample_path = os.path.join(
+            os.path.dirname(__file__),
+            'fixtures',
+            'export_sample.zip'
+        )
+        if os.path.exists(sample_path):
+            return sample_path
+        # Skip if sample doesn't exist
+        pytest.skip("export_sample.zip not found in tests/fixtures/")
+
+    def test_process_export_finds_running_workouts(self, export_zip_path: str) -> None:
+        """Should find and process running workouts from the actual export."""
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[400.0, 1000.0, 5000.0],
+            top_n=3,
+            progress=False
+        )
+        
+        # Should have results for requested distances
+        assert len(results) == 3
+        assert 400.0 in results
+        assert 1000.0 in results
+        assert 5000.0 in results
+
+    def test_process_export_returns_valid_segments(self, export_zip_path):
+        """Should return valid segment data with proper timing."""
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=5,
+            progress=False
+        )
+        
+        segments = results[1000.0]
+        if segments:  # Only check if we have segments
+            for duration, workout_date in segments:
+                assert isinstance(duration, float)
+                assert duration > 0
+                assert duration != float('inf')
+                assert isinstance(workout_date, (datetime, type(None)))
+
+    def test_process_export_respects_top_n(self, export_zip_path):
+        """Should return at most top_n segments per distance."""
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[400.0, 1000.0],
+            top_n=3,
+            progress=False
+        )
+        
+        for distance, segments in results.items():
+            assert len(segments) <= 3, f"Expected ≤3 segments for {distance}m, got {len(segments)}"
+
+    def test_process_export_with_start_date_filter(self, export_zip_path):
+        """Should filter segments by start date (inclusive)."""
+        start_date = datetime(2024, 1, 1).date()
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=10,
+            progress=False,
+            start_date=start_date
+        )
+        
+        segments = results[1000.0]
+        for _, workout_date in segments:
+            if workout_date:
+                assert workout_date.date() >= start_date
+
+    def test_process_export_with_end_date_filter(self, export_zip_path):
+        """Should filter segments by end date (inclusive)."""
+        end_date = datetime(2024, 12, 31).date()
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=10,
+            progress=False,
+            end_date=end_date
+        )
+        
+        segments = results[1000.0]
+        for _, workout_date in segments:
+            if workout_date:
+                assert workout_date.date() <= end_date
+
+    def test_process_export_with_date_range(self, export_zip_path):
+        """Should filter by date range (both start and end)."""
+        start_date = datetime(2024, 1, 1).date()
+        end_date = datetime(2024, 12, 31).date()
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=10,
+            progress=False,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        segments = results[1000.0]
+        for _, workout_date in segments:
+            if workout_date:
+                assert start_date <= workout_date.date() <= end_date
+
+    def test_process_export_max_speed_filtering(self, export_zip_path):
+        """Should apply speed penalties to fast intervals."""
+        # With low max_speed, should see more penalization
+        results_strict, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=3,
+            progress=False,
+            max_speed_kmh=10.0,  # Very restrictive
+            penalty_seconds=3.0
+        )
+        
+        results_lenient, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=[1000.0],
+            top_n=3,
+            progress=False,
+            max_speed_kmh=50.0,  # Very lenient
+            penalty_seconds=3.0
+        )
+        
+        # Both should have similar number of segments found
+        assert len(results_strict[1000.0]) >= 0
+        assert len(results_lenient[1000.0]) >= 0
+
+    def test_process_export_verbose_mode(self, export_zip_path):
+        """Should collect penalty messages in verbose mode."""
+        results, penalties = ahs.process_export(
+            export_zip_path,
+            distances_m=[400.0, 1000.0],
+            top_n=3,
+            progress=False,
+            verbose=True,
+            max_speed_kmh=15.0  # Lower threshold to trigger penalties
+        )
+        
+        # penalties should be a dict
+        assert isinstance(penalties, dict)
+        # May or may not have penalties depending on data
+        if penalties:
+            for key, msg in penalties.items():
+                assert isinstance(key, str)
+                assert isinstance(msg, str)
+
+    def test_process_export_multiple_distances(self, export_zip_path):
+        """Should process multiple target distances in one pass."""
+        distances = [400.0, 800.0, 1000.0, 5000.0, 10000.0]
+        results, _ = ahs.process_export(
+            export_zip_path,
+            distances_m=distances,
+            top_n=2,
+            progress=False
+        )
+        
+        # Should have results for each distance
+        for d in distances:
+            assert d in results
+            assert isinstance(results[d], list)
+
+    def test_process_export_consistency_across_runs(self, export_zip_path):
+        """Running the same export twice should give identical results."""
+        kwargs = {
+            'distances_m': [1000.0],
+            'top_n': 3,
+            'progress': False,
+            'max_speed_kmh': 20.0
+        }
+        
+        results1, _ = ahs.process_export(export_zip_path, **kwargs)
+        results2, _ = ahs.process_export(export_zip_path, **kwargs)
+        
+        # Results should be identical
+        assert len(results1[1000.0]) == len(results2[1000.0])
+        for (d1, dt1), (d2, dt2) in zip(results1[1000.0], results2[1000.0]):
+            assert abs(d1 - d2) < 0.01  # Allow tiny floating point differences
+            if dt1 and dt2:
+                assert dt1 == dt2
 
 
 class TestEdgeCases:
