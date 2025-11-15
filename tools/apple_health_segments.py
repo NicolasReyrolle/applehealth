@@ -4,7 +4,7 @@ CLI to find top fastest segments for running workouts inside an Apple Health exp
 
 Usage examples (PowerShell):
   pwsh> python .\tools\apple_health_segments.py \
-      --zip "C:\\Users\\NicolasReyrolle\\OneDrive - EDDA Luxembourg S.A\\Perso\\export.zip" \
+      --zip "export.zip" \
       --top 5
 
 Notes:
@@ -17,12 +17,10 @@ from __future__ import annotations
 import argparse
 import math
 import xml.etree.ElementTree as ET
-from collections import defaultdict
-from datetime import datetime
-from dateutil import parser as dateutil_parser
-from typing import Iterable, List, Tuple
-import heapq
 import zipfile
+from datetime import datetime, date
+from typing import Iterable, List, Tuple, BinaryIO, Any, Dict
+from dateutil import parser as dateutil_parser
 try:
     from tqdm import tqdm
 except Exception:
@@ -31,7 +29,7 @@ except Exception:
 DATE_FMT = '%d/%m/%Y'
 
 
-def haversine_meters(lat1, lon1, lat2, lon2):
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     # Returns distance in meters between two lat/lon points
     R = 6371000.0
     phi1 = math.radians(lat1)
@@ -49,7 +47,7 @@ def parse_timestamp(s: str) -> datetime:
     return dateutil_parser.parse(s)
 
 
-def stream_points_from_route(f) -> Iterable[Tuple[float, float, datetime]]:
+def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
     """Yield (lat, lon, timestamp) tuples from a route file-like object.
 
     Supports Apple Health `Route` XML with `Location` tags or GPX `trkpt` entries.
@@ -66,7 +64,7 @@ def stream_points_from_route(f) -> Iterable[Tuple[float, float, datetime]]:
     if text_start.startswith("<?xml") or text_start.startswith("<"):
         # Use iterparse on BytesIO
         it = ET.iterparse(bio, events=("end",))
-        for event, elem in it:
+        for _, elem in it:
             tag = elem.tag.split('}')[-1]
             if tag in ("Location", "location"):
                 lat = elem.get("latitude") or elem.get("lat")
@@ -97,7 +95,7 @@ def stream_points_from_route(f) -> Iterable[Tuple[float, float, datetime]]:
         # Unknown format: try line-based search for numeric lat/lon/time
         for line in f:
             try:
-                s = line.decode() if isinstance(line, (bytes, bytearray)) else line
+                s = line.decode() if isinstance(line, (bytes, bytearray)) else str(line)
             except Exception:
                 continue
             if "latitude" in s and "longitude" in s:
@@ -113,7 +111,7 @@ def stream_points_from_route(f) -> Iterable[Tuple[float, float, datetime]]:
                     continue
 
 
-def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m: float, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, debug_info: dict | None = None) -> Tuple[float, datetime, datetime]:
+def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m: float, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, debug_info: dict[str, Any] | None = None) -> Tuple[float, datetime | None, datetime | None]:
     """Return (best_adjusted_duration_seconds, start_time, end_time) for the given target distance in meters.
     Points is a list of (lat, lon, datetime) sorted by time.
     Uses two-pointer sliding window. Instead of dropping segments whose instantaneous
@@ -158,7 +156,7 @@ def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m:
     best = (float('inf'), None, None)
     best_i = -1
     best_j = -1
-    penalized_intervals = []  # list of (i_from, i_to, interval_seconds, speed_kmh, distance)
+    penalized_intervals: List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]] = []  # list of (i_from, i_to, interval_seconds, speed_kmh, distance)
     # cumulative adjusted time for fast sum queries
     cum_adj_time = [0.0] * n
     for i in range(1, n):
@@ -181,7 +179,7 @@ def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m:
         # For debugging, collect any penalized intervals inside [i+1..j]
         if debug_info is not None:
             # find penalized intervals indices where adj_time_deltas[k] > time_deltas[k]
-            penalized_in_segment = []
+            penalized_in_segment: List[Tuple[int, int, float, float, float]] = []
             for k in range(i + 1, j + 1):
                 if adj_time_deltas[k] > time_deltas[k]:
                     inst_speed_kmh = (dist_between[k] / time_deltas[k]) * 3.6 if time_deltas[k] > 0 else float('inf')
@@ -207,12 +205,12 @@ def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m:
     return best
 
 
-def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, debug: bool = False, progress: bool = False, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, verbose: bool = False, start_date=None, end_date=None, penalty_file: str | None = None):
+def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, debug: bool = False, progress: bool = False, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, verbose: bool = False, start_date: date | None = None, end_date: date | None = None, penalty_file: str | None = None):
     distances_m = list(distances_m)
     # best_segments[d] -> list of tuples (duration_seconds, date)
-    best_segments = {d: [] for d in distances_m}
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {d: [] for d in distances_m}
     # Collect penalty messages: dict of (date_str, ts_str) -> message to deduplicate
-    penalty_messages = {}
+    penalty_messages: Dict[str, str] = {}
 
     with zipfile.ZipFile(zip_path, 'r') as z:
         # Try to locate the export XML inside the archive (Apple exports sometimes use export_cda.xml)
@@ -232,8 +230,8 @@ def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, 
         if not export_xml_name:
             raise FileNotFoundError('Could not find export XML inside the zip')
         # First pass: collect running workouts into a list (id -> {'start','end'})
-        running_workouts = {}
-        running_workouts_list = []
+        running_workouts: Dict[str, Dict[str, datetime | None]] = {}
+        running_workouts_list: List[Tuple[str, datetime | None, datetime | None]] = []
         with z.open(export_xml_name) as ef:
             it = ET.iterparse(ef, events=("end",))
             idx = 0
@@ -262,8 +260,8 @@ def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, 
         # We'll match routes to workouts by time-overlap.
         from collections import defaultdict
 
-        workout_to_files = defaultdict(set)
-        routes = []  # list of (route_start, route_end, [paths])
+        workout_to_files: defaultdict[str, set[str]] = defaultdict(set)
+        routes: List[Tuple[datetime | None, datetime | None, List[str]]] = []  # list of (route_start, route_end, [paths])
         with z.open(export_xml_name) as ef:
             it = ET.iterparse(ef, events=("end",))
             for _, elem in it:
@@ -279,7 +277,7 @@ def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, 
                         rend_dt = parse_timestamp(rend) if rend else None
                     except Exception:
                         rend_dt = None
-                    paths = []
+                    paths: List[str] = []
                     # namespace-agnostic findall for FileReference
                     for fr in elem.iter():
                         if fr.tag.split('}')[-1] == 'FileReference':
@@ -291,7 +289,7 @@ def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, 
                 elem.clear()
 
         # Match route time windows to running workouts by overlap
-        def overlap(a_s, a_e, b_s, b_e):
+        def overlap(a_s: datetime | None, a_e: datetime | None, b_s: datetime | None, b_e: datetime | None) -> bool:
             if a_s is None or a_e is None or b_s is None or b_e is None:
                 return False
             latest_start = a_s if a_s > b_s else b_s
@@ -346,7 +344,7 @@ def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, 
             # Try several variants of the FileReference path to match entries inside the ZIP.
             if not ref_path:
                 return None
-            candidates = []
+            candidates: List[str] = []
             # raw as-is
             candidates.append(ref_path)
             # strip leading slash

@@ -2,6 +2,9 @@
 
 Find your fastest running segments for any distance from your Apple Health export.
 
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/b02a0df8d6ce4926bcd13468bdb8484d)](https://app.codacy.com/gh/NicolasReyrolle/applehealth/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+[![codecov](https://codecov.io/gh/NicolasReyrolle/applehealth/graph/badge.svg?token=xlwtapQwu8)](https://codecov.io/gh/NicolasReyrolle/applehealth)
+
 ## Quick Start
 
 ```powershell
@@ -189,8 +192,3 @@ For personal use. See repository for details.
 - See [TESTING.md](TESTING.md) for running tests
 - Review [TEST_SUMMARY.md](TEST_SUMMARY.md) for test coverage info
 
----
-
-**Last Updated:** November 2025
-**Test Coverage:** 64% of main tool, 44 tests passing
-**Status:** Production ready ✓
