@@ -51,7 +51,6 @@ Thumbs.db
 *.lnk
 
 # Project specific
-*.zip
 output/
 results/
 temp/
