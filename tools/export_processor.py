@@ -21,40 +21,43 @@ def parse_timestamp(s: str) -> datetime:
     return dateutil_parser.parse(s)
 
 
-def _get_location_attrs(elem: Any) -> Tuple[str | None, str | None, str | None]:
-    """Extract lat, lon, and timestamp attributes from element."""
+def _get_location_attrs(elem: Any) -> Tuple[str | None, str | None, str | None, str | None]:
+    """Extract lat, lon, elevation, and timestamp attributes from element."""
     lat = elem.get("latitude") or elem.get("lat")
     lon = elem.get("longitude") or elem.get("lon")
+    ele = elem.get("altitude") or elem.get("ele")
     ts = elem.get("timestamp") or elem.get("time")
-    return lat, lon, ts
+    return lat, lon, ele, ts
 
 
-def _parse_location_element(elem: Any) -> Tuple[float, float, datetime] | None:
-    """Parse Location element and return (lat, lon, timestamp) or None."""
-    lat, lon, ts = _get_location_attrs(elem)
+def _parse_location_element(elem: Any) -> Tuple[float, float, float, datetime] | None:
+    """Parse Location element and return (lat, lon, elevation, timestamp) or None."""
+    lat, lon, ele, ts = _get_location_attrs(elem)
     if lat and lon and ts:
         try:
-            return float(lat), float(lon), parse_timestamp(ts)
+            elevation = float(ele) if ele else 0.0
+            return float(lat), float(lon), elevation, parse_timestamp(ts)
         except (ValueError, TypeError):
             pass
     return None
 
 
 def _parse_trkpt_with_time(
-    elem: Any, current_time: str | None
-) -> Tuple[float, float, datetime] | None:
+    elem: Any, current_time: str | None, current_ele: str | None = None
+) -> Tuple[float, float, float, datetime] | None:
     """Parse trkpt element with stored time data."""
     lat = elem.get("lat")
     lon = elem.get("lon")
     if lat and lon and current_time:
         try:
-            return float(lat), float(lon), parse_timestamp(current_time)
+            elevation = float(current_ele) if current_ele else 0.0
+            return float(lat), float(lon), elevation, parse_timestamp(current_time)
         except (ValueError, TypeError):
             pass
     return None
 
 
-def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
+def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, float, datetime]]:
     """Parse XML data and yield GPS points."""
     it = iterparse(bio, events=("end",))
     current_trkpt_data: Dict[str, str] = {}
@@ -67,8 +70,10 @@ def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
                 yield point
         elif tag == "time" and elem.text:
             current_trkpt_data["time"] = elem.text
+        elif tag in ("ele", "elevation") and elem.text:
+            current_trkpt_data["ele"] = elem.text
         elif tag in ("trkpt", "trkPoint"):
-            point = _parse_trkpt_with_time(elem, current_trkpt_data.get("time"))
+            point = _parse_trkpt_with_time(elem, current_trkpt_data.get("time"), current_trkpt_data.get("ele"))
             if point:
                 yield point
             current_trkpt_data.clear()
@@ -83,41 +88,43 @@ def _decode_line(line: bytes | bytearray | str) -> str | None:
         return None
 
 
-def _extract_gps_from_line(s: str) -> Tuple[str | None, str | None, str | None]:
-    """Extract lat, lon, timestamp from line string."""
+def _extract_gps_from_line(s: str) -> Tuple[str | None, str | None, str | None, str | None]:
+    """Extract lat, lon, elevation, timestamp from line string."""
     parts = s.replace('"', "").replace("'", "").split()
     lat = next((p.split("=")[1] for p in parts if p.startswith("latitude")), None)
     lon = next((p.split("=")[1] for p in parts if p.startswith("longitude")), None)
+    ele = next((p.split("=")[1] for p in parts if p.startswith("altitude")), None)
     ts = next((p.split("=")[1] for p in parts if p.startswith("timestamp")), None)
-    return lat, lon, ts
+    return lat, lon, ele, ts
 
 
 def _create_gps_point(
-    lat: str | None, lon: str | None, ts: str | None
-) -> Tuple[float, float, datetime] | None:
+    lat: str | None, lon: str | None, ele: str | None, ts: str | None
+) -> Tuple[float, float, float, datetime] | None:
     """Create GPS point from string values, return None on error."""
     if not (lat and lon and ts):
         return None
     try:
-        return float(lat), float(lon), parse_timestamp(ts)
+        elevation = float(ele) if ele else 0.0
+        return float(lat), float(lon), elevation, parse_timestamp(ts)
     except (ValueError, TypeError, IndexError):
         return None
 
 
-def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
+def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, float, datetime]]:
     """Parse line-based data and yield GPS points."""
     for line in f:
         s = _decode_line(line)
         if not s or "latitude" not in s or "longitude" not in s:
             continue
-        lat, lon, ts = _extract_gps_from_line(s)
-        point = _create_gps_point(lat, lon, ts)
+        lat, lon, ele, ts = _extract_gps_from_line(s)
+        point = _create_gps_point(lat, lon, ele, ts)
         if point:
             yield point
 
 
-def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
-    """Yield (lat, lon, timestamp) tuples from a route file-like object.
+def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, float, datetime]]:
+    """Yield (lat, lon, elevation, timestamp) tuples from a route file-like object.
 
     Supports Apple Health `Route` XML with `Location` tags or GPX `trkpt` entries.
     Uses iterparse and clears elements to keep memory low.

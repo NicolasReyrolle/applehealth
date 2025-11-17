@@ -129,7 +129,7 @@ class TestFormatResultsLines:
     def test_format_results_with_segments(self):
         """Results with segments should format correctly."""
         dt = datetime(2024, 1, 15, 10, 0, 0)
-        results = {400.0: [(100.5, dt), (105.2, dt)]}
+        results = {400.0: [(100.5, dt, 0.0, 14.4), (105.2, dt, 5.0, 13.7)]}
         result = ahs._format_results_lines(results)  # type: ignore
         assert any("400 m" in line for line in result)  # type: ignore
         assert any("15/01/2024" in line for line in result)  # type: ignore
@@ -137,7 +137,7 @@ class TestFormatResultsLines:
 
     def test_format_results_with_none_date(self):
         """Results with None date should show 'unknown'."""
-        results = {1000.0: [(120.0, None)]}
+        results = {1000.0: [(120.0, None, 0.0, 30.0)]}
         result = ahs._format_results_lines(results)  # type: ignore
         assert any("unknown" in line for line in result)  # type: ignore
 

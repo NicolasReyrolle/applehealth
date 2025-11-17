@@ -20,8 +20,15 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     return 2 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def distance_3d_meters(lat1: float, lon1: float, ele1: float, lat2: float, lon2: float, ele2: float) -> float:
+    """Return 3D distance in meters between two points including elevation."""
+    horizontal_dist = haversine_meters(lat1, lon1, lat2, lon2)
+    vertical_dist = abs(ele2 - ele1)
+    return math.sqrt(horizontal_dist ** 2 + vertical_dist ** 2)
+
+
 def _compute_intervals(
-    points: List[Tuple[float, float, datetime]],
+    points: List[Tuple[float, float, float, datetime]],
     max_speed_kmh: float,
     penalty_seconds: float,
 ) -> Tuple[List[float], List[float], List[float], List[float]]:
@@ -33,13 +40,13 @@ def _compute_intervals(
     adj_time_deltas = [0.0] * n
 
     for i in range(1, n):
-        lat1, lon1, _ = points[i - 1]
-        lat2, lon2, _ = points[i]
-        d = haversine_meters(lat1, lon1, lat2, lon2)
+        lat1, lon1, ele1, _ = points[i - 1]
+        lat2, lon2, ele2, _ = points[i]
+        d = distance_3d_meters(lat1, lon1, ele1, lat2, lon2, ele2)
         cum[i] = cum[i - 1] + d
 
-        t1 = points[i - 1][2]
-        t2 = points[i][2]
+        t1 = points[i - 1][3]
+        t2 = points[i][3]
         dt = max(0.0, (t2 - t1).total_seconds())
         time_deltas[i] = dt
         dist_between[i] = d
@@ -84,7 +91,7 @@ def _find_best_segment(
     n: int,
     distances: Dict[str, List[float]],
     target_m: float,
-    points: List[Tuple[float, float, datetime]],
+    points: List[Tuple[float, float, float, datetime]],
     intervals: Dict[str, List[float]],
     debug_info: dict[str, Any] | None,
 ) -> Tuple[
@@ -117,7 +124,7 @@ def _find_best_segment(
                 penalized_intervals.append((i, j, penalties))
 
         if duration >= 0 and duration < best[0]:
-            best = (duration, points[i][2], points[j][2])
+            best = (duration, points[i][3], points[j][3])
             best_i = i
             best_j = j
 
@@ -150,18 +157,18 @@ def _update_debug_info(
 
 
 def best_segment_for_dist(
-    points: List[Tuple[float, float, datetime]],
+    points: List[Tuple[float, float, float, datetime]],
     target_m: float,
     max_speed_kmh: float = 35.39,
     penalty_seconds: float = 3.0,
     debug_info: dict[str, Any] | None = None,
-) -> Tuple[float, datetime | None, datetime | None]:
-    """Return (best_adjusted_duration_seconds, start_time, end_time).
+) -> Tuple[float, datetime | None, datetime | None, float, float]:
+    """Return (duration, start_time, end_time, elevation_change, avg_speed_kmh).
 
     For the given target distance in meters.
     """
     if not points:
-        return (float("inf"), None, None)
+        return (float("inf"), None, None, 0.0, 0.0)
 
     n = len(points)
     cum, time_deltas, dist_between, adj_time_deltas = _compute_intervals(
@@ -179,17 +186,29 @@ def best_segment_for_dist(
         n, distances, target_m, points, intervals, debug_info
     )
 
+    # Calculate elevation change and speed for best segment
+    elevation_change = 0.0
+    avg_speed_kmh = 0.0
+    if best_i >= 0 and best_j >= 0:
+        start_ele = points[best_i][2]
+        end_ele = points[best_j][2]
+        elevation_change = end_ele - start_ele
+        
+        segment_distance = cum[best_j] - cum[best_i]
+        if best[0] > 0:
+            avg_speed_kmh = (segment_distance / best[0]) * 3.6
+
     if debug_info is not None:
         _update_debug_info(debug_info, best_i, best_j, cum, n, penalized_intervals)
 
-    return best
+    return (best[0], best[1], best[2], elevation_change, avg_speed_kmh)
 
 
 def collect_penalty_messages(
     penalized_intervals_data: List[
         Tuple[int, int, List[Tuple[int, int, float, float, float]]]
     ],
-    points: List[Tuple[float, float, datetime]],
+    points: List[Tuple[float, float, float, datetime]],
     penalty_messages: Dict[str, str],
 ) -> None:
     """Collect penalty messages from penalized intervals data."""
@@ -197,7 +216,7 @@ def collect_penalty_messages(
         for from_idx, to_idx, interval_dur, inst_speed_kmh, _ in penalized_list:
             ts: datetime | None = None
             try:
-                ts = points[from_idx][2]
+                ts = points[from_idx][3]
             except IndexError:
                 ts = None
             ts_formatted = (
