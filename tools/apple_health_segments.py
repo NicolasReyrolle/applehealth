@@ -17,13 +17,12 @@ from __future__ import annotations
 
 import argparse
 import math
-import re
 import xml.etree.ElementTree as ET
-import zipfile
-from collections import defaultdict
 from datetime import datetime, date
 from typing import Iterable, List, Tuple, BinaryIO, Any, Dict
 from dateutil import parser as dateutil_parser
+
+from export_processor import ExportReader, match_routes_to_workouts
 
 try:
     from tqdm import tqdm
@@ -346,6 +345,82 @@ def _collect_penalty_messages(
                 penalty_messages[key] = msg
 
 
+def _process_workout(
+    reader: ExportReader,
+    workout_ref: str,
+    refs: set[str],
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    distances_m: List[float],
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    max_speed_kmh: float,
+    penalty_seconds: float,
+    debug: bool,
+    verbose: bool,
+    start_date: date | None,
+    end_date: date | None,
+) -> None:
+    """Process a single workout and update results."""
+    wd = running_workouts.get(workout_ref)
+    workout_date = wd.get("start") if isinstance(wd, dict) else wd
+
+    if start_date and workout_date and workout_date.date() < start_date:
+        return
+    if end_date and workout_date and workout_date.date() > end_date:
+        return
+
+    points: List[Tuple[float, float, datetime]] = []
+    for ref in refs:
+        try:
+            z_path = reader.resolve_zip_path(ref)
+            if not z_path:
+                z_path = reader.resolve_zip_path(ref.lstrip("/") if ref else ref)
+                if not z_path:
+                    continue
+            with reader.zipfile.open(z_path) as rf:
+                for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
+                    points.append((lat, lon, ts))
+        except (KeyError, ET.ParseError, ValueError, TypeError):
+            continue
+
+    if not points:
+        return
+
+    points.sort(key=lambda x: x[2])  # type: ignore
+
+    for d in distances_m:
+        debug_info: Dict[str, Any] | None = {} if debug or verbose else None
+        duration, s, _ = best_segment_for_dist(
+            points, d, max_speed_kmh, penalty_seconds, debug_info
+        )
+        if duration != float("inf") and s:
+            best_segments[d].append((duration, workout_date))
+            if (
+                debug
+                and workout_date
+                and s
+                and math.isclose(d, 400.0)
+                and debug_info is not None
+                and workout_date.strftime(DATE_FMT) == "26/12/2021"
+            ):
+                segment_dist = debug_info.get("segment_dist", "N/A")  # type: ignore
+                num_points = debug_info.get("num_points", "N/A")  # type: ignore
+                total_dist = debug_info.get("total_dist", "N/A")  # type: ignore
+                print(
+                    f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, "
+                    f"dist_covered={segment_dist:.1f}m, pts={num_points}, "
+                    f"total={total_dist:.0f}m"
+                )
+        if (
+            verbose
+            and debug_info is not None
+            and (penalized_intervals_data := debug_info.get("penalized_intervals"))
+        ):  # type: ignore
+            _collect_penalty_messages(
+                penalized_intervals_data, points, penalty_messages
+            )
+
+
 def process_export(
     zip_path: str,
     distances_m: Iterable[float],
@@ -363,288 +438,58 @@ def process_export(
     Returns tuple of (results_dict, penalty_messages_dict).
     """
     distances_m = list(distances_m)
-    # best_segments[d] -> list of tuples (duration_seconds, date)
     best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {
         d: [] for d in distances_m
     }
-    # Collect penalty messages: dict of (date_str, ts_str) -> message to deduplicate
     penalty_messages: Dict[str, str] = {}
 
-    with zipfile.ZipFile(zip_path, "r") as z:
-        # Try to locate the export XML inside the archive
-        # (Apple exports sometimes use export_cda.xml)
-        names = z.namelist()
-        export_xml_name = None
-        for n in names:
-            ln = n.lower()
-            if (
-                ln.endswith("export.xml")
-                or ln.endswith("export_cda.xml")
-                or "/export.xml" in ln
-            ):
-                export_xml_name = n
-                break
-        if not export_xml_name:
-            # fallback: try any xml at root containing 'export'
-            for n in names:
-                if n.lower().endswith(".xml") and "export" in n.lower():
-                    export_xml_name = n
-                    break
-        if not export_xml_name:
-            raise FileNotFoundError("Could not find export XML inside the zip")
-        # First pass: collect running workouts into a list (id -> {'start','end'})
-        running_workouts: Dict[str, Dict[str, datetime | None]] = {}
-        running_workouts_list: List[Tuple[str, datetime | None, datetime | None]] = []
-        with z.open(export_xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
-            idx = 0
-            for _, elem in it:
-                tag = elem.tag.split("}")[-1]
-                if tag == "Workout":
-                    wtype = elem.get("workoutActivityType")
-                    start = (
-                        elem.get("startDate")
-                        or elem.get("creationDate")
-                        or elem.get("start")
-                    )
-                    end = elem.get("endDate") or elem.get("end")
-                    if wtype == "HKWorkoutActivityTypeRunning":
-                        wid = f"wk_{idx}"
-                        idx += 1
-                        try:
-                            sdt = parse_timestamp(start) if start else None
-                        except (ValueError, TypeError):
-                            sdt = None
-                        try:
-                            edt = parse_timestamp(end) if end else None
-                        except (ValueError, TypeError):
-                            edt = None
-                        running_workouts_list.append((wid, sdt, edt))
-                        running_workouts[wid] = {"start": sdt, "end": edt}
-                elem.clear()
+    with ExportReader(zip_path) as reader:
+        export_xml_name = reader.find_export_xml()
+        running_workouts = reader.collect_running_workouts(export_xml_name)
+        routes = reader.collect_routes(export_xml_name)
 
-        # Collect all WorkoutRoute entries (with start/end and file refs).
-        # We'll match routes to workouts by time-overlap.
-        workout_to_files: defaultdict[str, set[str]] = defaultdict(set)
-        routes: List[
-            Tuple[datetime | None, datetime | None, List[str]]
-        ] = []  # list of (route_start, route_end, [paths])
-        with z.open(export_xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
-            for _, elem in it:
-                tag = elem.tag.split("}")[-1]
-                if tag == "WorkoutRoute":
-                    rstart = elem.get("startDate") or elem.get("creationDate") or None
-                    rend = elem.get("endDate") or None
-                    try:
-                        rstart_dt = parse_timestamp(rstart) if rstart else None
-                    except (ValueError, TypeError):
-                        rstart_dt = None
-                    try:
-                        rend_dt = parse_timestamp(rend) if rend else None
-                    except (ValueError, TypeError):
-                        rend_dt = None
-                    paths: List[str] = []
-                    # namespace-agnostic findall for FileReference
-                    for fr in elem.iter():
-                        if fr.tag.split("}")[-1] == "FileReference":
-                            path = fr.get("path") or fr.text
-                            if path:
-                                paths.append(path)
-                    if paths:
-                        routes.append((rstart_dt, rend_dt, paths))
-                elem.clear()
-
-        # Match route time windows to running workouts by overlap
-        def overlap(
-            a_s: datetime | None,
-            a_e: datetime | None,
-            b_s: datetime | None,
-            b_e: datetime | None,
-        ) -> bool:
-            """Check if two time ranges overlap."""
-            if a_s is None or a_e is None or b_s is None or b_e is None:
-                return False
-            latest_start = a_s if a_s > b_s else b_s
-            earliest_end = a_e if a_e < b_e else b_e
-            return latest_start <= earliest_end
-
-        # For each route, attach its files to workouts that overlap in time
-        for rstart, rend, paths in routes:
-            for wid, w in running_workouts.items():
-                if overlap(rstart, rend, w.get("start"), w.get("end")):
-                    for p in paths:
-                        workout_to_files[wid].add(p)
-
-        # If we found no routes via XML parsing above, fallback to a text-based scan
-        # which is more forgiving about namespaces and structure.
         if not routes:
-            try:
-                data = z.read(export_xml_name).decode("utf-8", errors="ignore")
-                pattern = re.compile(
-                    r"<WorkoutRoute([^>]*)>(.*?)</WorkoutRoute>", re.DOTALL
-                )
-                for m in pattern.finditer(data):
-                    opening = m.group(1)
-                    body = m.group(2)
+            routes = reader.collect_routes_fallback(export_xml_name)
 
-                    # find start and end attributes
-                    def find_attr(s: str, name: str) -> str | None:
-                        """Extract attribute value from XML string."""
-                        p = re.search(rf'{name}="([^"]+)"', s)
-                        return p.group(1) if p else None
+        workout_to_files = match_routes_to_workouts(routes, running_workouts)
 
-                    rstart = find_attr(opening, "startDate") or find_attr(
-                        opening, "creationDate"
-                    )
-                    rend = find_attr(opening, "endDate")
-                    try:
-                        rstart_dt = parse_timestamp(rstart) if rstart else None
-                    except (ValueError, TypeError):
-                        rstart_dt = None
-                    try:
-                        rend_dt = parse_timestamp(rend) if rend else None
-                    except (ValueError, TypeError):
-                        rend_dt = None
-                    # find all FileReference path occurrences in body
-                    paths = re.findall(r'<FileReference[^>]*path="([^"]+)"', body)
-                    if paths:
-                        routes.append((rstart_dt, rend_dt, paths))
-                # re-run matching
-                for rstart, rend, paths in routes:
-                    for wid, w in running_workouts.items():
-                        if overlap(rstart, rend, w.get("start"), w.get("end")):
-                            for p in paths:
-                                workout_to_files[wid].add(p)
-            except (UnicodeDecodeError, AttributeError):
-                pass
-
-        def resolve_zip_path(zf: zipfile.ZipFile, ref_path: str) -> str | None:
-            """Try several path variants to match FileReference inside ZIP."""
-            if not ref_path:
-                return None
-            candidates: List[str] = []
-            # raw as-is
-            candidates.append(ref_path)
-            # strip leading slash
-            if ref_path.startswith("/"):
-                candidates.append(ref_path.lstrip("/"))
-            else:
-                candidates.append("/" + ref_path)
-            # try under apple_health_export/ prefix
-            if not ref_path.startswith("apple_health_export"):
-                p = ref_path.lstrip("/")
-                candidates.append("apple_health_export/" + p)
-                candidates.append("apple_health_export" + ref_path)
-
-            for c in candidates:
-                if c in zf.namelist():
-                    return c
-            return None
-
-        # Diagnostic summary: counts (only if debug requested)
         if debug:
             print(
-                f"DEBUG: running_workouts={len(running_workouts)}, routes_with_paths={len(routes)}"
+                f"DEBUG: running_workouts={len(running_workouts)}, "
+                f"routes_with_paths={len(routes)}"
             )
             print(f"DEBUG: matched workout->files entries={len(workout_to_files)}")
-            # show a small sample
-            sample_count = 0
             for k, v in list(workout_to_files.items())[:5]:
                 print(f"DEBUG: workout {k} -> {list(v)[:3]}")
-                sample_count += 1
-                if sample_count >= 5:
-                    break
 
-        # Process each workout once, consolidating points across all referenced route files
         iterable = workout_to_files.items()
         if progress and tqdm is not None:
             iterable = tqdm(list(iterable), desc="Workouts")
-        elif progress and tqdm is None:
-            if debug:
-                print("DEBUG: tqdm not installed, progress disabled")
+        elif progress and tqdm is None and debug:
+            print("DEBUG: tqdm not installed, progress disabled")
 
         for workout_ref, refs in iterable:
-            workout_date = None
-            wd = running_workouts.get(workout_ref)
-            if isinstance(wd, dict):
-                workout_date = wd.get("start")
-            else:
-                workout_date = wd
-            points: List[Tuple[float, float, datetime]] = []
-            for ref in refs:
-                try:
-                    z_path = resolve_zip_path(z, ref)
-                    if not z_path:
-                        # try without leading slash
-                        z_path = resolve_zip_path(z, ref.lstrip("/") if ref else ref)
-                        if not z_path:
-                            # referenced file not found in zip, skip
-                            continue
-                    with z.open(z_path) as rf:
-                        for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
-                            points.append((lat, lon, ts))
-                except KeyError:
-                    # referenced file not found in zip, skip
-                    continue
-                except (ET.ParseError, ValueError, TypeError):
-                    # ignore parsing errors per-file to be robust
-                    continue
+            _process_workout(
+                reader,
+                workout_ref,
+                refs,
+                running_workouts,
+                distances_m,
+                best_segments,
+                penalty_messages,
+                max_speed_kmh,
+                penalty_seconds,
+                debug,
+                verbose,
+                start_date,
+                end_date,
+            )
 
-            if not points:
-                continue
-            # sort by timestamp and compute segments once per workout
-            points.sort(key=lambda x: x[2])  # type: ignore
-            # Filter by date range if specified
-            if start_date and workout_date and workout_date.date() < start_date:
-                continue
-            if end_date and workout_date and workout_date.date() > end_date:
-                continue
-            for d in distances_m:
-                debug_info: Dict[str, Any] | None = {} if debug or verbose else None
-                duration, s, _ = best_segment_for_dist(
-                    points, d, max_speed_kmh, penalty_seconds, debug_info
-                )
-                if duration != float("inf") and s:
-                    best_segments[d].append((duration, workout_date))
-                    # Log details if this is the target date and distance
-                    if (
-                        debug
-                        and workout_date
-                        and s
-                        and math.isclose(d, 400.0)
-                        and debug_info is not None
-                        and workout_date.strftime(DATE_FMT) == "26/12/2021"
-                    ):
-                        segment_dist = debug_info.get("segment_dist", "N/A")  # type: ignore
-                        num_points = debug_info.get("num_points", "N/A")  # type: ignore
-                        total_dist = debug_info.get("total_dist", "N/A")  # type: ignore
-                        print(
-                            f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, "
-                            f"dist_covered={segment_dist:.1f}m, pts={num_points}, "
-                            f"total={total_dist:.0f}m"
-                        )
-                # Collect penalty messages if verbose (deduplicating by timestamp)
-                if (
-                    verbose
-                    and debug_info is not None
-                    and (
-                        penalized_intervals_data := debug_info.get(
-                            "penalized_intervals"
-                        )
-                    )
-                ):  # type: ignore
-                    _collect_penalty_messages(
-                        penalized_intervals_data, points, penalty_messages
-                    )
-
-    # Reduce to top-N fastest per distance
     results: Dict[float, List[Tuple[float, datetime | None]]] = {}
     for d, segs in best_segments.items():
         segs.sort(key=lambda x: x[0])  # type: ignore
         results[d] = segs[:top_n]
 
-    # Return both results and penalty messages
     return results, penalty_messages
 
 
