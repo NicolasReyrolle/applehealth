@@ -25,7 +25,6 @@ from export_processor import (
     ExportReader,
     match_routes_to_workouts,
     stream_points_from_route,
-    parse_timestamp,
 )
 from segment_analysis import best_segment_for_dist, collect_penalty_messages
 

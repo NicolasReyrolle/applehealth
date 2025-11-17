@@ -72,7 +72,8 @@ class TestIntegrationWithMockExport:
         with zipfile.ZipFile(zip_path, "w") as zf:  # type: ignore
             zf.writestr("export.xml", export_xml.encode("utf-8"))  # type: ignore
             zf.writestr(
-                "apple_health_export/workout-routes/test_route.gpx", mock_gpx_content  # type: ignore
+                "apple_health_export/workout-routes/test_route.gpx",
+                mock_gpx_content,  # type: ignore
             )  # type: ignore
 
         return str(zip_path)  # type: ignore
