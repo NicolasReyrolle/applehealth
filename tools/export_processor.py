@@ -17,11 +17,17 @@ def parse_timestamp(s: str) -> datetime:
     return dateutil_parser.parse(s)
 
 
-def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] | None:
-    """Parse Location element and return (lat, lon, timestamp) or None."""
+def _get_location_attrs(elem: ET.Element) -> Tuple[str | None, str | None, str | None]:
+    """Extract lat, lon, and timestamp attributes from element."""
     lat = elem.get("latitude") or elem.get("lat")
     lon = elem.get("longitude") or elem.get("lon")
-    ts = elem.get("timestamp") or elem.get("time") or elem.get("timestamp")
+    ts = elem.get("timestamp") or elem.get("time")
+    return lat, lon, ts
+
+
+def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] | None:
+    """Parse Location element and return (lat, lon, timestamp) or None."""
+    lat, lon, ts = _get_location_attrs(elem)
     if lat and lon and ts:
         try:
             return float(lat), float(lon), parse_timestamp(ts)
@@ -65,29 +71,35 @@ def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
         elem.clear()
 
 
+def _decode_line(line: bytes | bytearray | str) -> str | None:
+    """Decode line to string, return None on error."""
+    try:
+        return line.decode() if isinstance(line, (bytes, bytearray)) else str(line)
+    except (UnicodeDecodeError, AttributeError):
+        return None
+
+
+def _extract_gps_from_line(s: str) -> Tuple[str | None, str | None, str | None]:
+    """Extract lat, lon, timestamp from line string."""
+    parts = s.replace('"', "").replace("'", "").split()
+    lat = next((p.split("=")[1] for p in parts if p.startswith("latitude")), None)
+    lon = next((p.split("=")[1] for p in parts if p.startswith("longitude")), None)
+    ts = next((p.split("=")[1] for p in parts if p.startswith("timestamp")), None)
+    return lat, lon, ts
+
+
 def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
     """Parse line-based data and yield GPS points."""
     for line in f:
-        try:
-            s = line.decode() if isinstance(line, (bytes, bytearray)) else str(line)
-        except (UnicodeDecodeError, AttributeError):
+        s = _decode_line(line)
+        if not s or "latitude" not in s or "longitude" not in s:
             continue
-        if "latitude" in s and "longitude" in s:
-            try:
-                parts = s.replace('"', "").replace("'", "").split()
-                lat = next(
-                    (p.split("=")[1] for p in parts if p.startswith("latitude")), None
-                )
-                lon = next(
-                    (p.split("=")[1] for p in parts if p.startswith("longitude")), None
-                )
-                ts = next(
-                    (p.split("=")[1] for p in parts if p.startswith("timestamp")), None
-                )
-                if lat and lon and ts:
-                    yield float(lat), float(lon), parse_timestamp(ts)
-            except (ValueError, TypeError, IndexError):
-                continue
+        try:
+            lat, lon, ts = _extract_gps_from_line(s)
+            if lat and lon and ts:
+                yield float(lat), float(lon), parse_timestamp(ts)
+        except (ValueError, TypeError, IndexError):
+            continue
 
 
 def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
