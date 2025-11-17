@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
 from datetime import datetime
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, BinaryIO, Iterable
 from dateutil import parser as dateutil_parser
 
 
@@ -15,6 +15,98 @@ def parse_timestamp(s: str) -> datetime:
     if not s:
         raise ValueError("Empty timestamp")
     return dateutil_parser.parse(s)
+
+
+def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] | None:
+    """Parse Location element and return (lat, lon, timestamp) or None."""
+    lat = elem.get("latitude") or elem.get("lat")
+    lon = elem.get("longitude") or elem.get("lon")
+    ts = elem.get("timestamp") or elem.get("time") or elem.get("timestamp")
+    if lat and lon and ts:
+        try:
+            return float(lat), float(lon), parse_timestamp(ts)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _parse_trkpt_with_time(
+    elem: ET.Element, current_time: str | None
+) -> Tuple[float, float, datetime] | None:
+    """Parse trkpt element with stored time data."""
+    lat = elem.get("lat")
+    lon = elem.get("lon")
+    if lat and lon and current_time:
+        try:
+            return float(lat), float(lon), parse_timestamp(current_time)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
+    """Parse XML data and yield GPS points."""
+    it = ET.iterparse(bio, events=("end",))
+    current_trkpt_data: Dict[str, str] = {}
+
+    for _, elem in it:
+        tag = elem.tag.split("}")[-1]
+        if tag in ("Location", "location"):
+            point = _parse_location_element(elem)
+            if point:
+                yield point
+        elif tag == "time" and elem.text:
+            current_trkpt_data["time"] = elem.text
+        elif tag in ("trkpt", "trkPoint"):
+            point = _parse_trkpt_with_time(elem, current_trkpt_data.get("time"))
+            if point:
+                yield point
+            current_trkpt_data.clear()
+        elem.clear()
+
+
+def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
+    """Parse line-based data and yield GPS points."""
+    for line in f:
+        try:
+            s = line.decode() if isinstance(line, (bytes, bytearray)) else str(line)
+        except (UnicodeDecodeError, AttributeError):
+            continue
+        if "latitude" in s and "longitude" in s:
+            try:
+                parts = s.replace('"', "").replace("'", "").split()
+                lat = next(
+                    (p.split("=")[1] for p in parts if p.startswith("latitude")), None
+                )
+                lon = next(
+                    (p.split("=")[1] for p in parts if p.startswith("longitude")), None
+                )
+                ts = next(
+                    (p.split("=")[1] for p in parts if p.startswith("timestamp")), None
+                )
+                if lat and lon and ts:
+                    yield float(lat), float(lon), parse_timestamp(ts)
+            except (ValueError, TypeError, IndexError):
+                continue
+
+
+def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
+    """Yield (lat, lon, timestamp) tuples from a route file-like object.
+
+    Supports Apple Health `Route` XML with `Location` tags or GPX `trkpt` entries.
+    Uses iterparse and clears elements to keep memory low.
+    """
+    data = f.read()
+    try:
+        bio = __import__("io").BytesIO(data)
+        text_start = data[:4096].decode("utf-8", errors="ignore").lstrip()
+    except (UnicodeDecodeError, AttributeError):
+        return
+
+    if text_start.startswith("<?xml") or text_start.startswith("<"):
+        yield from _parse_xml_data(bio)
+    else:
+        yield from _parse_line_data(f)
 
 
 class ExportReader:
