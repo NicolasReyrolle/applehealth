@@ -18,6 +18,7 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
 ## Documentation
 
 ### User Guide
+
 - **[tools/README.md](tools/README.md)** - Complete CLI documentation
   - Installation & setup
   - Command-line options
@@ -26,7 +27,9 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
   - Examples and troubleshooting
 
 ### Testing
+
 - **[TESTING.md](TESTING.md)** - How to run tests
+
   - Test commands
   - Coverage reports
   - Test structure overview
@@ -53,6 +56,7 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
 ## Example Usage
 
 ### Find your fastest 5km times in 2024
+
 ```powershell
 python tools/apple_health_segments.py `
   --zip "path\to\export.zip" `
@@ -63,6 +67,7 @@ python tools/apple_health_segments.py `
 ```
 
 ### Analyze GPS issues on a specific date
+
 ```powershell
 python tools/apple_health_segments.py `
   --zip "path\to\export.zip" `
@@ -74,13 +79,14 @@ python tools/apple_health_segments.py `
 ```
 
 ### See all command options
+
 ```powershell
 python tools/apple_health_segments.py --help
 ```
 
 ## Project Structure
 
-```
+```text
 applehealth/
 ├── tools/
 │   ├── apple_health_segments.py    # Main CLI tool (439 lines)
@@ -95,19 +101,22 @@ applehealth/
 └── README.md                       # This file
 ```
 
-## Testing
+## Test Commands
 
 Run all tests:
+
 ```powershell
 python -m pytest tests/ -v
 ```
 
 Generate coverage report:
+
 ```powershell
 python -m pytest tests/ -v --cov=tools --cov-report=html
 ```
 
 ### Test Summary
+
 - **44 tests** passing
 - **64% code coverage** of main tool
 - **9 test classes** covering:
@@ -135,6 +144,7 @@ GPS receivers sometimes produce erratic readings (especially in urban areas). In
 - Show warnings with `--verbose` flag
 
 **Example:**
+
 - Clean segment: 400m in 100s → Rank: 100s ⭐
 - Segment with spike: 400m in 103s adjusted → Rank: 103s (slower)
 - Normal segment: 400m in 96s → Rank: 96s (fastest) 🏃
@@ -150,6 +160,7 @@ GPS receivers sometimes produce erratic readings (especially in urban areas). In
 See [tools/README.md](tools/README.md) for complete documentation.
 
 Key parameters:
+
 - `--zip PATH` - Export file (required)
 - `--top N` - Number of results per distance (default: 5)
 - `--distances D1 D2 ...` - Target distances in meters
@@ -161,16 +172,19 @@ Key parameters:
 ## Troubleshooting
 
 **No segments found?**
+
 - Check export.zip contains running workouts with routes
 - Verify distances are in meters (1000 = 1km)
 - Check date filters if using --start-date/--end-date
 
 **Unrealistic speeds?**
+
 - Lower `--max-speed` (e.g., 15 km/h)
 - Use `--verbose` to see flagged intervals
 - Increase `--speed-penalty` to demote these segments further
 
 **Performance issues?**
+
 - Use `--no-progress` to skip progress bar
 - Filter by date range to reduce workouts processed
 - Ensure export.zip is on local fast storage (SSD)
@@ -191,4 +205,3 @@ For personal use. See repository for details.
 - Check [tools/README.md](tools/README.md) for usage details
 - See [TESTING.md](TESTING.md) for running tests
 - Review [TEST_SUMMARY.md](TEST_SUMMARY.md) for test coverage info
-

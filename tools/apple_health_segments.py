@@ -12,460 +12,268 @@ Notes:
   route file one at a time to avoid loading the entire archive into memory.
 - Supported route file formats: Apple Health `Route` XML with `Location` tags, and GPX.
 """
+
 from __future__ import annotations
 
 import argparse
 import math
 import xml.etree.ElementTree as ET
-import zipfile
 from datetime import datetime, date
-from typing import Iterable, List, Tuple, BinaryIO, Any, Dict
-from dateutil import parser as dateutil_parser
+from typing import Iterable, List, Tuple, Any, Dict
+
+from export_processor import (
+    ExportReader,
+    match_routes_to_workouts,
+    stream_points_from_route,
+)
+from segment_analysis import best_segment_for_dist, collect_penalty_messages
+
 try:
     from tqdm import tqdm
-except Exception:
+except ImportError:
     tqdm = None
 
-DATE_FMT = '%d/%m/%Y'
+DATE_FMT = "%d/%m/%Y"
 
 
-def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    # Returns distance in meters between two lat/lon points
-    R = 6371000.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+def _load_workout_points(
+    reader: ExportReader, refs: set[str]
+) -> List[Tuple[float, float, datetime]]:
+    """Load GPS points from workout route files."""
+    points: List[Tuple[float, float, datetime]] = []
+    for ref in refs:
+        try:
+            z_path = reader.resolve_zip_path(ref)
+            if not z_path:
+                z_path = reader.resolve_zip_path(ref.lstrip("/") if ref else ref)
+                if not z_path:
+                    continue
+            with reader.zipfile.open(z_path) as rf:
+                for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
+                    points.append((lat, lon, ts))
+        except (KeyError, ET.ParseError, ValueError, TypeError):
+            continue
+    return points
 
 
-def parse_timestamp(s: str) -> datetime:
-    # Use dateutil for robust parsing of many timestamp formats
-    if not s:
-        raise ValueError("Empty timestamp")
-    return dateutil_parser.parse(s)
+def _log_debug_segment(
+    debug: bool,
+    workout_date: datetime | None,
+    d: float,
+    duration: float,
+    debug_info: Dict[str, Any] | None,
+) -> None:
+    """Log debug information for specific segment."""
+    if not debug or not workout_date or not debug_info:
+        return
+    if not math.isclose(d, 400.0):
+        return
+    if workout_date.strftime(DATE_FMT) != "26/12/2021":
+        return
+    segment_dist = debug_info.get("segment_dist", "N/A")  # type: ignore
+    num_points = debug_info.get("num_points", "N/A")  # type: ignore
+    total_dist = debug_info.get("total_dist", "N/A")  # type: ignore
+    print(
+        f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, "
+        f"dist_covered={segment_dist:.1f}m, pts={num_points}, "
+        f"total={total_dist:.0f}m"
+    )
 
 
-def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
-    """Yield (lat, lon, timestamp) tuples from a route file-like object.
+def _process_distance(
+    d: float,
+    points: List[Tuple[float, float, datetime]],
+    workout_date: datetime | None,
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    config: Dict[str, Any],
+) -> None:
+    """Process a single distance for the workout."""
+    max_speed_kmh = config.get("max_speed_kmh", 20.0)
+    penalty_seconds = config.get("penalty_seconds", 3.0)
+    debug = config.get("debug", False)
+    verbose = config.get("verbose", False)
 
-    Supports Apple Health `Route` XML with `Location` tags or GPX `trkpt` entries.
-    Uses iterparse and clears elements to keep memory low.
-    """
-    # read entire file into memory for robust parsing (route files are small)
-    data = f.read()
-    try:
-        bio = __import__('io').BytesIO(data)
-        text_start = data[:4096].decode('utf-8', errors='ignore').lstrip()
-    except Exception:
+    debug_info: Dict[str, Any] | None = {} if debug or verbose else None
+    duration, s, _ = best_segment_for_dist(
+        points, d, max_speed_kmh, penalty_seconds, debug_info
+    )
+    if duration != float("inf") and s:
+        best_segments[d].append((duration, workout_date))
+        _log_debug_segment(debug, workout_date, d, duration, debug_info)
+    if (
+        verbose
+        and debug_info is not None
+        and (penalized_intervals_data := debug_info.get("penalized_intervals"))
+    ):  # type: ignore
+        collect_penalty_messages(penalized_intervals_data, points, penalty_messages)
+
+
+def _should_skip_workout(
+    workout_date: datetime | None, start_date: date | None, end_date: date | None
+) -> bool:
+    """Check if workout should be skipped based on date filters."""
+    if not workout_date:
+        return False
+    if start_date and workout_date.date() < start_date:
+        return True
+    if end_date and workout_date.date() > end_date:
+        return True
+    return False
+
+
+def _process_workout(
+    reader: ExportReader,
+    workout_ref: str,
+    refs: set[str],
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    distances_m: List[float],
+    results: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    config: Dict[str, Any],
+) -> None:
+    """Process a single workout and update results."""
+    wd = running_workouts.get(workout_ref)
+    workout_date = wd.get("start") if isinstance(wd, dict) else wd
+
+    if _should_skip_workout(
+        workout_date, config.get("start_date"), config.get("end_date")
+    ):
         return
 
-    if text_start.startswith("<?xml") or text_start.startswith("<"):
-        # Use iterparse on BytesIO
-        it = ET.iterparse(bio, events=("end",))
-        for _, elem in it:
-            tag = elem.tag.split('}')[-1]
-            if tag in ("Location", "location"):
-                lat = elem.get("latitude") or elem.get("lat")
-                lon = elem.get("longitude") or elem.get("lon")
-                ts = elem.get("timestamp") or elem.get("time") or elem.get("timestamp")
-                if lat and lon and ts:
-                    try:
-                        yield float(lat), float(lon), parse_timestamp(ts)
-                    except Exception:
-                        pass
-                elem.clear()
-            elif tag in ("trkpt", "trkPoint"):
-                lat = elem.get("lat")
-                lon = elem.get("lon")
-                # try to find a child <time> in a namespace-agnostic way
-                ts_text = None
-                for child in elem:
-                    if child.tag.split('}')[-1] == 'time' and child.text:
-                        ts_text = child.text
-                        break
-                if lat and lon and ts_text:
-                    try:
-                        yield float(lat), float(lon), parse_timestamp(ts_text)
-                    except Exception:
-                        pass
-                elem.clear()
-    else:
-        # Unknown format: try line-based search for numeric lat/lon/time
-        for line in f:
-            try:
-                s = line.decode() if isinstance(line, (bytes, bytearray)) else str(line)
-            except Exception:
-                continue
-            if "latitude" in s and "longitude" in s:
-                # naive parse
-                try:
-                    parts = s.replace('"', "").replace("'", "").split()
-                    lat = next((p.split('=')[1] for p in parts if p.startswith("latitude")), None)
-                    lon = next((p.split('=')[1] for p in parts if p.startswith("longitude")), None)
-                    ts = next((p.split('=')[1] for p in parts if p.startswith("timestamp")), None)
-                    if lat and lon and ts:
-                        yield float(lat), float(lon), parse_timestamp(ts)
-                except Exception:
-                    continue
-
-
-def best_segment_for_dist(points: List[Tuple[float, float, datetime]], target_m: float, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, debug_info: dict[str, Any] | None = None) -> Tuple[float, datetime | None, datetime | None]:
-    """Return (best_adjusted_duration_seconds, start_time, end_time) for the given target distance in meters.
-    Points is a list of (lat, lon, datetime) sorted by time.
-    Uses two-pointer sliding window. Instead of dropping segments whose instantaneous
-    intervals exceed `max_speed_kmh`, we add `penalty_seconds` to any interval where
-    the instantaneous speed > max_speed_kmh. The adjusted duration is used for ranking.
-    """
+    points = _load_workout_points(reader, refs)
     if not points:
-        return (float('inf'), None, None)
-    n = len(points)
-    # Precompute cumulative distances between points and per-interval times/distances
-    cum = [0.0] * n
-    # time_deltas[i] is seconds between point i-1 and i (for i>=1)
-    time_deltas = [0.0] * n
-    dist_between = [0.0] * n
-    adj_time_deltas = [0.0] * n
-    for i in range(1, n):
-        lat1, lon1, _ = points[i - 1]
-        lat2, lon2, _ = points[i]
-        d = haversine_meters(lat1, lon1, lat2, lon2)
-        cum[i] = cum[i - 1] + d
-        # compute time delta
-        t1 = points[i - 1][2]
-        t2 = points[i][2]
-        dt = (t2 - t1).total_seconds()
-        if dt < 0:
-            dt = 0.0
-        time_deltas[i] = dt
-        dist_between[i] = d
-        # instantaneous speed (km/h) for this interval
-        # Skip intervals with infinite speed (zero duration, nonzero distance)
-        if dt <= 0 and d > 0:
-            inst_speed_kmh = float('inf')
-        else:
-            inst_speed_kmh = (d / dt) * 3.6 if dt > 0 else 0.0
-        # Skip penalty assignment for infinite speed; treat as normal duration
-        if math.isinf(inst_speed_kmh):
-            adj = dt
-        else:
-            adj = dt + (penalty_seconds if inst_speed_kmh > max_speed_kmh else 0.0)
-        adj_time_deltas[i] = adj
+        return
 
-    best = (float('inf'), None, None)
-    best_i = -1
-    best_j = -1
-    penalized_intervals: List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]] = []  # list of (i_from, i_to, interval_seconds, speed_kmh, distance)
-    # cumulative adjusted time for fast sum queries
-    cum_adj_time = [0.0] * n
-    for i in range(1, n):
-        cum_adj_time[i] = cum_adj_time[i - 1] + adj_time_deltas[i]
-    j = 0
-    for i in range(n):
-        # ensure j starts ahead of i
-        if j <= i:
-            j = i + 1
-        # advance j until distance between i and j >= target
-        while j < n and (cum[j] - cum[i]) < target_m:
-            j += 1
-        if j >= n:
-            break
-        start_time = points[i][2]
-        end_time = points[j][2]
-        # Adjusted duration: sum of adjusted per-interval times from i+1..j
-        # which equals cum_adj_time[j] - cum_adj_time[i]
-        duration = cum_adj_time[j] - cum_adj_time[i]
-        # For debugging, collect any penalized intervals inside [i+1..j]
-        if debug_info is not None:
-            # find penalized intervals indices where adj_time_deltas[k] > time_deltas[k]
-            penalized_in_segment: List[Tuple[int, int, float, float, float]] = []
-            for k in range(i + 1, j + 1):
-                if adj_time_deltas[k] > time_deltas[k]:
-                    inst_speed_kmh = (dist_between[k] / time_deltas[k]) * 3.6 if time_deltas[k] > 0 else float('inf')
-                    penalized_in_segment.append((k - 1, k, time_deltas[k], inst_speed_kmh, dist_between[k]))
-            if penalized_in_segment:
-                penalized_intervals.append((i, j, penalized_in_segment))
-        if duration >= 0 and duration < best[0]:
-            best = (duration, start_time, end_time)
-            best_i = i
-            best_j = j
-    
-    # Store debug info if requested
-    if debug_info is not None and best_i >= 0 and best_j >= 0:
-        debug_info['best_i'] = best_i
-        debug_info['best_j'] = best_j
-        debug_info['start_cum_dist'] = cum[best_i]
-        debug_info['end_cum_dist'] = cum[best_j]
-        debug_info['segment_dist'] = cum[best_j] - cum[best_i]
-        debug_info['num_points'] = n
-        debug_info['total_dist'] = cum[-1] if n > 0 else 0
-        debug_info['penalized_intervals'] = penalized_intervals
-    
-    return best
+    points.sort(key=lambda x: x[2])  # type: ignore
+
+    for d in distances_m:
+        _process_distance(d, points, workout_date, results, penalty_messages, config)
 
 
-def process_export(zip_path: str, distances_m: Iterable[float], top_n: int = 5, debug: bool = False, progress: bool = False, max_speed_kmh: float = 35.39, penalty_seconds: float = 3.0, verbose: bool = False, start_date: date | None = None, end_date: date | None = None, penalty_file: str | None = None):
+def _print_debug_info(
+    debug: bool,
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    routes: List[Tuple[datetime | None, datetime | None, List[str]]],
+    workout_to_files: Dict[str, set[str]],
+) -> None:
+    """Print debug information."""
+    if not debug:
+        return
+    print(
+        f"DEBUG: running_workouts={len(running_workouts)}, "
+        f"routes_with_paths={len(routes)}"
+    )
+    print(f"DEBUG: matched workout->files entries={len(workout_to_files)}")
+    for k, v in list(workout_to_files.items())[:5]:
+        print(f"DEBUG: workout {k} -> {list(v)[:3]}")
+
+
+def _get_progress_iterable(iterable: Any, progress: bool, debug: bool) -> Any:
+    """Wrap iterable with progress bar if available."""
+    if progress and tqdm is not None:
+        return tqdm(list(iterable), desc="Workouts")
+    if progress and tqdm is None and debug:
+        print("DEBUG: tqdm not installed, progress disabled")
+    return iterable
+
+
+def _finalize_results(
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]], top_n: int
+) -> Dict[float, List[Tuple[float, datetime | None]]]:
+    """Sort and trim results to top N."""
+    results: Dict[float, List[Tuple[float, datetime | None]]] = {}
+    for d, segs in best_segments.items():
+        segs.sort(key=lambda x: x[0])  # type: ignore
+        results[d] = segs[:top_n]
+    return results
+
+
+def _load_export_data(
+    reader: ExportReader,
+) -> Tuple[
+    Dict[str, Dict[str, datetime | None]],
+    List[Tuple[datetime | None, datetime | None, List[str]]],
+    Dict[str, set[str]],
+]:
+    """Load workouts, routes, and match them."""
+    export_xml_name = reader.find_export_xml()
+    running_workouts = reader.collect_running_workouts(export_xml_name)
+    routes = reader.collect_routes(export_xml_name)
+    if not routes:
+        routes = reader.collect_routes_fallback(export_xml_name)
+    workout_to_files = match_routes_to_workouts(routes, running_workouts)
+    return running_workouts, routes, workout_to_files
+
+
+def _process_all_workouts(
+    reader: ExportReader,
+    workout_to_files: Dict[str, set[str]],
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    distances_m: List[float],
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    config: Dict[str, Any],
+) -> None:
+    """Process all workouts with progress tracking."""
+    iterable = _get_progress_iterable(
+        workout_to_files.items(),
+        config.get("progress", False),
+        config.get("debug", False),
+    )
+    for workout_ref, refs in iterable:
+        _process_workout(
+            reader,
+            workout_ref,
+            refs,
+            running_workouts,
+            distances_m,
+            best_segments,
+            penalty_messages,
+            config,
+        )
+
+
+def process_export(
+    zip_path: str,
+    distances_m: Iterable[float],
+    top_n: int = 5,
+    config: Dict[str, Any] | None = None,
+) -> Tuple[Dict[float, List[Tuple[float, datetime | None]]], Dict[str, str]]:
+    """Process Apple Health export to find fastest running segments.
+
+    Returns tuple of (results_dict, penalty_messages_dict).
+    """
+    if config is None:
+        config = {}
+
     distances_m = list(distances_m)
-    # best_segments[d] -> list of tuples (duration_seconds, date)
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {d: [] for d in distances_m}
-    # Collect penalty messages: dict of (date_str, ts_str) -> message to deduplicate
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {
+        d: [] for d in distances_m
+    }
     penalty_messages: Dict[str, str] = {}
 
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        # Try to locate the export XML inside the archive (Apple exports sometimes use export_cda.xml)
-        names = z.namelist()
-        export_xml_name = None
-        for n in names:
-            ln = n.lower()
-            if ln.endswith('export.xml') or ln.endswith('export_cda.xml') or '/export.xml' in ln:
-                export_xml_name = n
-                break
-        if not export_xml_name:
-            # fallback: try any xml at root containing 'export'
-            for n in names:
-                if n.lower().endswith('.xml') and 'export' in n.lower():
-                    export_xml_name = n
-                    break
-        if not export_xml_name:
-            raise FileNotFoundError('Could not find export XML inside the zip')
-        # First pass: collect running workouts into a list (id -> {'start','end'})
-        running_workouts: Dict[str, Dict[str, datetime | None]] = {}
-        running_workouts_list: List[Tuple[str, datetime | None, datetime | None]] = []
-        with z.open(export_xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
-            idx = 0
-            for _, elem in it:
-                tag = elem.tag.split('}')[-1]
-                if tag == 'Workout':
-                    wtype = elem.get('workoutActivityType')
-                    start = elem.get('startDate') or elem.get('creationDate') or elem.get('start')
-                    end = elem.get('endDate') or elem.get('end')
-                    if wtype == 'HKWorkoutActivityTypeRunning':
-                        wid = f"wk_{idx}"
-                        idx += 1
-                        try:
-                            sdt = parse_timestamp(start) if start else None
-                        except Exception:
-                            sdt = None
-                        try:
-                            edt = parse_timestamp(end) if end else None
-                        except Exception:
-                            edt = None
-                        running_workouts_list.append((wid, sdt, edt))
-                        running_workouts[wid] = {'start': sdt, 'end': edt}
-                elem.clear()
+    with ExportReader(zip_path) as reader:
+        running_workouts, routes, workout_to_files = _load_export_data(reader)
+        _print_debug_info(
+            config.get("debug", False), running_workouts, routes, workout_to_files
+        )
+        _process_all_workouts(
+            reader,
+            workout_to_files,
+            running_workouts,
+            distances_m,
+            best_segments,
+            penalty_messages,
+            config,
+        )
 
-        # Collect all WorkoutRoute entries (with start/end and file refs).
-        # We'll match routes to workouts by time-overlap.
-        from collections import defaultdict
-
-        workout_to_files: defaultdict[str, set[str]] = defaultdict(set)
-        routes: List[Tuple[datetime | None, datetime | None, List[str]]] = []  # list of (route_start, route_end, [paths])
-        with z.open(export_xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
-            for _, elem in it:
-                tag = elem.tag.split('}')[-1]
-                if tag == 'WorkoutRoute':
-                    rstart = elem.get('startDate') or elem.get('creationDate') or None
-                    rend = elem.get('endDate') or None
-                    try:
-                        rstart_dt = parse_timestamp(rstart) if rstart else None
-                    except Exception:
-                        rstart_dt = None
-                    try:
-                        rend_dt = parse_timestamp(rend) if rend else None
-                    except Exception:
-                        rend_dt = None
-                    paths: List[str] = []
-                    # namespace-agnostic findall for FileReference
-                    for fr in elem.iter():
-                        if fr.tag.split('}')[-1] == 'FileReference':
-                            path = fr.get('path') or fr.text
-                            if path:
-                                paths.append(path)
-                    if paths:
-                        routes.append((rstart_dt, rend_dt, paths))
-                elem.clear()
-
-        # Match route time windows to running workouts by overlap
-        def overlap(a_s: datetime | None, a_e: datetime | None, b_s: datetime | None, b_e: datetime | None) -> bool:
-            if a_s is None or a_e is None or b_s is None or b_e is None:
-                return False
-            latest_start = a_s if a_s > b_s else b_s
-            earliest_end = a_e if a_e < b_e else b_e
-            return latest_start <= earliest_end
-
-        # For each route, attach its files to workouts that overlap in time
-        for rstart, rend, paths in routes:
-            for wid, w in running_workouts.items():
-                if overlap(rstart, rend, w.get('start'), w.get('end')):
-                    for p in paths:
-                        workout_to_files[wid].add(p)
-
-        # If we found no routes via XML parsing above, fallback to a text-based scan
-        # which is more forgiving about namespaces and structure.
-        if not routes:
-            try:
-                data = z.read(export_xml_name).decode('utf-8', errors='ignore')
-                import re
-                pattern = re.compile(r"<WorkoutRoute([^>]*)>(.*?)</WorkoutRoute>", re.DOTALL)
-                for m in pattern.finditer(data):
-                    opening = m.group(1)
-                    body = m.group(2)
-                    # find start and end attributes
-                    def find_attr(s, name):
-                        p = re.search(rf'{name}="([^"]+)"', s)
-                        return p.group(1) if p else None
-                    rstart = find_attr(opening, 'startDate') or find_attr(opening, 'creationDate')
-                    rend = find_attr(opening, 'endDate')
-                    try:
-                        rstart_dt = parse_timestamp(rstart) if rstart else None
-                    except Exception:
-                        rstart_dt = None
-                    try:
-                        rend_dt = parse_timestamp(rend) if rend else None
-                    except Exception:
-                        rend_dt = None
-                    # find all FileReference path occurrences in body
-                    paths = re.findall(r'<FileReference[^>]*path="([^"]+)"', body)
-                    if paths:
-                        routes.append((rstart_dt, rend_dt, paths))
-                # re-run matching
-                for rstart, rend, paths in routes:
-                    for wid, w in running_workouts.items():
-                        if overlap(rstart, rend, w.get('start'), w.get('end')):
-                            for p in paths:
-                                workout_to_files[wid].add(p)
-            except Exception:
-                pass
-
-        def resolve_zip_path(zf: zipfile.ZipFile, ref_path: str):
-            # Try several variants of the FileReference path to match entries inside the ZIP.
-            if not ref_path:
-                return None
-            candidates: List[str] = []
-            # raw as-is
-            candidates.append(ref_path)
-            # strip leading slash
-            if ref_path.startswith('/'):
-                candidates.append(ref_path.lstrip('/'))
-            else:
-                candidates.append('/' + ref_path)
-            # try under apple_health_export/ prefix
-            if not ref_path.startswith('apple_health_export'):
-                p = ref_path.lstrip('/')
-                candidates.append('apple_health_export/' + p)
-                candidates.append('apple_health_export' + ref_path)
-
-            for c in candidates:
-                if c in zf.namelist():
-                    return c
-            return None
-
-        # Diagnostic summary: counts (only if debug requested)
-        if debug:
-            print(f"DEBUG: running_workouts={len(running_workouts)}, routes_with_paths={len(routes)}")
-            print(f"DEBUG: matched workout->files entries={len(workout_to_files)}")
-            # show a small sample
-            sample_count = 0
-            for k, v in list(workout_to_files.items())[:5]:
-                print(f"DEBUG: workout {k} -> {list(v)[:3]}")
-                sample_count += 1
-                if sample_count >= 5:
-                    break
-
-        # Process each workout once, consolidating points across all referenced route files
-        iterable = workout_to_files.items()
-        if progress and tqdm is not None:
-            iterable = tqdm(list(iterable), desc="Workouts")
-        elif progress and tqdm is None:
-            if debug:
-                print("DEBUG: tqdm not installed, progress disabled")
-
-        for workout_ref, refs in iterable:
-            workout_date = None
-            wd = running_workouts.get(workout_ref)
-            if isinstance(wd, dict):
-                workout_date = wd.get('start')
-            else:
-                workout_date = wd
-            points = []
-            for ref in refs:
-                try:
-                    z_path = resolve_zip_path(z, ref)
-                    if not z_path:
-                        # try without leading slash
-                        z_path = resolve_zip_path(z, ref.lstrip('/') if ref else ref)
-                    if not z_path:
-                        # referenced file not found in zip, skip
-                        # keep going to next referenced file
-                        # print a small debug hint
-                        # (avoid noisy output; only print when running interactively)
-                        # fallback to next
-                        continue
-                    with z.open(z_path) as rf:
-                        for lat, lon, ts in stream_points_from_route(rf):
-                            points.append((lat, lon, ts))
-                except KeyError:
-                    # referenced file not found in zip, skip
-                    continue
-                except Exception:
-                    # ignore parsing errors per-file to be robust
-                    continue
-
-            if not points:
-                continue
-            # sort by timestamp and compute segments once per workout
-            points.sort(key=lambda x: x[2])
-            # Filter by date range if specified
-            if start_date and workout_date and workout_date.date() < start_date:
-                continue
-            if end_date and workout_date and workout_date.date() > end_date:
-                continue
-            for d in distances_m:
-                debug_info = {} if debug or verbose else None
-                duration, s, _ = best_segment_for_dist(points, d, max_speed_kmh, penalty_seconds, debug_info)
-                if duration != float('inf') and s:
-                    best_segments[d].append((duration, workout_date))
-                    # Log details if this is the target date and distance
-                    if debug and workout_date and s and math.isclose(d, 400.0):
-                        if workout_date.strftime(DATE_FMT) == '26/12/2021':
-                            print(f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, dist_covered={debug_info.get('segment_dist', 'N/A'):.1f}m, pts={debug_info.get('num_points', 'N/A')}, total={debug_info.get('total_dist', 'N/A'):.0f}m")
-                # Collect penalty messages if verbose (deduplicating by timestamp)
-                if verbose and debug_info and debug_info.get('penalized_intervals'):
-                    # debug_info['penalized_intervals'] is a list of (seg_i, seg_j, penalized_in_segment)
-                    for seg_i, seg_j, penalized_list in debug_info['penalized_intervals']:
-                        for from_idx, to_idx, interval_dur, inst_speed_kmh, interval_dist in penalized_list:
-                            # from_idx is index of the earlier point in the pair
-                            ts = None
-                            try:
-                                ts = points[from_idx][2]
-                            except Exception:
-                                ts = None
-                            if ts is not None:
-                                # Format as DD/MM/YYYY HH:MM:SS
-                                ts_formatted = ts.strftime('%d/%m/%Y %H:%M:%S')
-                            else:
-                                ts_formatted = 'unknown'
-                            # Use timestamp as unique key to avoid duplicate messages for same data point
-                            key = ts_formatted
-                            msg = f"{ts_formatted} | interval {from_idx}->{to_idx} | {interval_dur:.2f}s | {inst_speed_kmh:.1f} km/h"
-                            if key not in penalty_messages:
-                                penalty_messages[key] = msg
-
-    # Reduce to top-N fastest per distance
-    results = {}
-    for d, segs in best_segments.items():
-        segs.sort(key=lambda x: x[0])
-        results[d] = segs[:top_n]
-    
-    # Return both results and penalty messages
-    return results, penalty_messages
+    return _finalize_results(best_segments, top_n), penalty_messages
 
 
-def format_duration(s: float) -> str:
-    if s is None or s == float('inf'):
+def format_duration(s: float | None) -> str:
+    """Format duration in seconds as HH:MM:SS string."""
+    if s is None or s == float("inf"):
         return "-"
     total = int(round(s))
     hours = total // 3600
@@ -474,7 +282,7 @@ def format_duration(s: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def format_distance(d: float) -> str:
+def format_distance(d: float | None) -> str:
     """Return a human-friendly label for a distance in meters.
 
     - 1000 -> '1 km', 5000 -> '5 km'
@@ -489,7 +297,7 @@ def format_distance(d: float) -> str:
             return "Half Marathon"
         if abs(d - 42195.0) < 0.5:
             return "Marathon"
-    except Exception:
+    except (ArithmeticError, ValueError):
         pass
     # Use km for round kilometers
     if d >= 1000:
@@ -497,115 +305,199 @@ def format_distance(d: float) -> str:
         if abs(km - round(km)) < 1e-6:
             return f"{int(round(km))} km"
         # show up to 2 decimals, trim trailing zeros
-        s = f"{km:.2f}".rstrip('0').rstrip('.')
+        s = f"{km:.2f}".rstrip("0").rstrip(".")
         return f"{s} km"
     # default to meters
     return f"{int(round(d))} m"
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Find top fastest running segments in an Apple Health export.zip")
-    parser.add_argument('--zip', required=True, help='Path to export.zip')
-    parser.add_argument('--top', type=int, default=5, help='Number of top segments per distance')
-    parser.add_argument('--distances', nargs='+', type=float,
-                        default=[400.0, 800.0, 1000.0, 5000.0, 10000.0, 15000.0, 20000.0, 21097.5, 42195.0],
-                        help='Distances in meters to search (e.g. 400 1000 5000)')
-    parser.add_argument('--output-file', '-o', help='Write output to this text file')
-    parser.add_argument('--penalty-file', help='Write penalty messages to this text file (also prints to screen)')
-    parser.add_argument('--debug', action='store_true', help='Show debug messages')
-    parser.add_argument('--max-speed', type=float, default=20.0, help='Maximum instantaneous speed in km/h to consider valid (filters GPS errors; default: 20.0 km/h)')
-    parser.add_argument('--verbose', action='store_true', help='Show warnings for segments exceeding max-speed limit')
-    parser.add_argument('--speed-penalty', '--penalty-seconds', dest='speed_penalty', type=float, default=3.0, help='Seconds to add to any interval exceeding --max-speed')
-    # progress is enabled by default; use --no-progress to disable
-    parser.add_argument('--progress', dest='progress', action='store_true', help='Show a progress bar during processing (default: enabled)')
-    parser.add_argument('--no-progress', dest='progress', action='store_false', help='Disable the progress bar')
-    parser.add_argument('--start-date', help='Start date filter (YYYYMMDD format, inclusive)')
-    parser.add_argument('--end-date', help='End date filter (YYYYMMDD format, inclusive)')
-    parser.set_defaults(progress=True)
-    args = parser.parse_args()
+def _add_basic_args(parser: argparse.ArgumentParser) -> None:
+    """Add basic CLI arguments."""
+    parser.add_argument("--zip", required=True, help="Path to export.zip")
+    parser.add_argument(
+        "--top", type=int, default=5, help="Number of top segments per distance"
+    )
+    parser.add_argument(
+        "--distances",
+        nargs="+",
+        type=float,
+        default=[
+            400.0,
+            800.0,
+            1000.0,
+            5000.0,
+            10000.0,
+            15000.0,
+            20000.0,
+            21097.5,
+            42195.0,
+        ],
+        help="Distances in meters to search (e.g. 400 1000 5000)",
+    )
+    parser.add_argument("--output-file", "-o", help="Write output to this text file")
+    parser.add_argument(
+        "--penalty-file",
+        help="Write penalty messages to this text file (also prints to screen)",
+    )
+    parser.add_argument("--debug", action="store_true", help="Show debug messages")
 
-    # Parse and validate date filters
+
+def _add_speed_args(parser: argparse.ArgumentParser) -> None:
+    """Add speed and penalty related arguments."""
+    parser.add_argument(
+        "--max-speed",
+        type=float,
+        default=20.0,
+        help=(
+            "Maximum instantaneous speed in km/h to consider valid "
+            "(filters GPS errors; default: 20.0 km/h)"
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show warnings for segments exceeding max-speed limit",
+    )
+    parser.add_argument(
+        "--speed-penalty",
+        "--penalty-seconds",
+        dest="speed_penalty",
+        type=float,
+        default=3.0,
+        help="Seconds to add to any interval exceeding --max-speed",
+    )
+
+
+def _add_filter_args(parser: argparse.ArgumentParser) -> None:
+    """Add progress and date filter arguments."""
+    parser.add_argument(
+        "--progress",
+        dest="progress",
+        action="store_true",
+        help="Show a progress bar during processing (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable the progress bar",
+    )
+    parser.add_argument(
+        "--start-date", help="Start date filter (YYYYMMDD format, inclusive)"
+    )
+    parser.add_argument(
+        "--end-date", help="End date filter (YYYYMMDD format, inclusive)"
+    )
+    parser.set_defaults(progress=True)
+
+
+def _add_cli_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add all CLI arguments to parser."""
+    _add_basic_args(parser)
+    _add_speed_args(parser)
+    _add_filter_args(parser)
+
+
+def _parse_cli_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Find top fastest running segments in an Apple Health export.zip"
+    )
+    _add_cli_arguments(parser)
+    return parser.parse_args()
+
+
+def _parse_date_filters(args: argparse.Namespace) -> Tuple[date | None, date | None]:
+    """Parse and validate date filter arguments."""
     start_date = None
     end_date = None
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, "%Y%m%d").date()
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, "%Y%m%d").date()
+    return start_date, end_date
+
+
+def _format_penalty_lines(penalty_messages: Dict[str, str]) -> List[str]:
+    """Format penalty messages for output."""
+    if not penalty_messages:
+        return []
+    lines = ["", "=== PENALTY WARNINGS ==="]
+    for key in sorted(penalty_messages.keys()):
+        lines.append(penalty_messages[key])
+    lines.append("")
+    return lines
+
+
+def _format_results_lines(
+    results: Dict[float, List[Tuple[float, datetime | None]]],
+) -> List[str]:
+    """Format results for output."""
+    lines: List[str] = []
+    for d in sorted(results.keys()):
+        lines.append(f"\nDistance: {format_distance(d)}")
+        rows = results[d]
+        if not rows:
+            lines.append("  No segments found")
+            continue
+        for idx, (duration, workout_dt) in enumerate(rows, start=1):
+            if workout_dt:
+                try:
+                    date_str = workout_dt.strftime("%d/%m/%Y")
+                except (AttributeError, ValueError):
+                    date_str = workout_dt.isoformat()
+            else:
+                date_str = "unknown"
+            lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}")
+    return lines
+
+
+def _write_output_file(filepath: str, lines: List[str]) -> None:
+    """Write lines to output file."""
     try:
-        if args.start_date:
-            start_date = datetime.strptime(args.start_date, '%Y%m%d').date()
-        if args.end_date:
-            end_date = datetime.strptime(args.end_date, '%Y%m%d').date()
+        with open(filepath, "w", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+    except OSError as e:
+        print(f"Error writing file: {e}")
+
+
+def main():
+    """Main entry point for CLI."""
+    args = _parse_cli_args()
+
+    try:
+        start_date, end_date = _parse_date_filters(args)
     except ValueError as e:
         print(f"Error parsing date: {e}. Use YYYYMMDD format.")
         return
 
+    config: Dict[str, Any] = {
+        "debug": args.debug,
+        "progress": args.progress,
+        "max_speed_kmh": args.max_speed,
+        "penalty_seconds": args.speed_penalty,
+        "verbose": args.verbose,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
     results, penalty_messages = process_export(
-        args.zip,
-        args.distances,
-        top_n=args.top,
-        debug=args.debug,
-        progress=args.progress,
-        max_speed_kmh=args.max_speed,
-        penalty_seconds=args.speed_penalty,
-        verbose=args.verbose,
-        start_date=start_date,
-        end_date=end_date,
-        penalty_file=args.penalty_file,
+        args.zip, args.distances, top_n=args.top, config=config
     )
 
-    # Print results
-    out_lines = []
-    
-    # Add penalty messages to output if any
-    penalty_lines = []
-    if penalty_messages:
-        penalty_lines.append("")
-        penalty_lines.append("=== PENALTY WARNINGS ===")
-        # Sort penalty messages by timestamp (key is already in DD/MM/YYYY HH:MM:SS format)
-        for key in sorted(penalty_messages.keys()):
-            penalty_lines.append(penalty_messages[key])
-        penalty_lines.append("")
-    
-    for d in sorted(results.keys()):
-        out_lines.append(f"\nDistance: {format_distance(d)}")
-        rows = results[d]
-        if not rows:
-            out_lines.append("  No segments found")
-            continue
-        for idx, (duration, date) in enumerate(rows, start=1):
-            if date:
-                try:
-                    date_str = date.strftime('%d/%m/%Y')
-                except Exception:
-                    # fallback to isoformat
-                    date_str = date.isoformat()
-            else:
-                date_str = "unknown"
-            out_lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}")
+    penalty_lines = _format_penalty_lines(penalty_messages)
+    out_lines = _format_results_lines(results)
 
-    # print penalty messages to stdout
     for line in penalty_lines:
         print(line)
-
-    # print results to stdout
     for line in out_lines:
         print(line)
 
-    # optionally write penalty messages to file
     if args.penalty_file and penalty_messages:
-        try:
-            with open(args.penalty_file, 'w', encoding='utf-8') as fh:
-                for line in penalty_lines:
-                    fh.write(line + '\n')
-        except Exception as e:
-            print(f"Error writing penalty file: {e}")
-
-    # optionally write main results to file
+        _write_output_file(args.penalty_file, penalty_lines)
     if args.output_file:
-        try:
-            with open(args.output_file, 'w', encoding='utf-8') as fh:
-                for line in out_lines:
-                    fh.write(line + '\n')
-        except Exception as e:
-            print(f"Error writing output file: {e}")
+        _write_output_file(args.output_file, out_lines)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
