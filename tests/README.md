@@ -34,6 +34,25 @@ Generate coverage report:
 python -m pytest tests/ -v --cov=tools --cov-report=html
 ```
 
+Run mutation testing:
+
+**Note**: `mutmut` requires Unix/Linux environment (uses `resource` module not available on Windows)
+
+```bash
+# On Linux/macOS or WSL:
+# Install dependencies (including mutmut)
+python -m pip install -r tools/requirements.txt
+
+# Run mutation testing on tools directory
+mutmut run --paths-to-mutate tools/
+
+# View mutation testing results
+mutmut results
+
+# Show detailed results for specific mutations
+mutmut show
+```
+
 ## Test Organization
 
 Each module focuses on a specific functional area, making it easier to:
