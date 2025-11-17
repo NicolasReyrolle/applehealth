@@ -21,6 +21,10 @@ if tools_path not in sys.path:
 
 # pylint: disable=import-error,wrong-import-position
 import apple_health_segments as ahs  # type: ignore # pyright: ignore
+from typing import cast, Any
+
+# Type annotations for imported functions
+ahs = cast(Any, ahs)  # Tell Pylance to treat ahs as Any to suppress unknown type warnings
 
 
 class TestHaversineMeters:
