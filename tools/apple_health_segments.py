@@ -26,6 +26,7 @@ from export_processor import (
     match_routes_to_workouts,
     stream_points_from_route,
 )
+from segment_analysis import best_segment_for_dist, collect_penalty_messages
 
 try:
     from tqdm import tqdm
@@ -33,220 +34,6 @@ except ImportError:
     tqdm = None
 
 DATE_FMT = "%d/%m/%Y"
-
-
-def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Return distance in meters between two lat/lon points."""
-    earth_radius_m = 6371000.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
-    return 2 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _compute_intervals(
-    points: List[Tuple[float, float, datetime]],
-    max_speed_kmh: float,
-    penalty_seconds: float,
-) -> Tuple[List[float], List[float], List[float], List[float]]:
-    """Compute cumulative distances and adjusted time deltas."""
-    n = len(points)
-    cum = [0.0] * n
-    time_deltas = [0.0] * n
-    dist_between = [0.0] * n
-    adj_time_deltas = [0.0] * n
-
-    for i in range(1, n):
-        lat1, lon1, _ = points[i - 1]
-        lat2, lon2, _ = points[i]
-        d = haversine_meters(lat1, lon1, lat2, lon2)
-        cum[i] = cum[i - 1] + d
-
-        t1 = points[i - 1][2]
-        t2 = points[i][2]
-        dt = max(0.0, (t2 - t1).total_seconds())
-        time_deltas[i] = dt
-        dist_between[i] = d
-
-        if dt <= 0 and d > 0:
-            inst_speed_kmh = float("inf")
-        else:
-            inst_speed_kmh = (d / dt) * 3.6 if dt > 0 else 0.0
-
-        if math.isinf(inst_speed_kmh):
-            adj = dt
-        else:
-            adj = dt + (penalty_seconds if inst_speed_kmh > max_speed_kmh else 0.0)
-        adj_time_deltas[i] = adj
-
-    return cum, time_deltas, dist_between, adj_time_deltas
-
-
-def _collect_debug_penalties(
-    i: int,
-    j: int,
-    adj_time_deltas: List[float],
-    time_deltas: List[float],
-    dist_between: List[float],
-) -> List[Tuple[int, int, float, float, float]]:
-    """Collect penalized intervals for debugging."""
-    penalized_in_segment: List[Tuple[int, int, float, float, float]] = []
-    for k in range(i + 1, j + 1):
-        if adj_time_deltas[k] > time_deltas[k]:
-            inst_speed_kmh = (
-                (dist_between[k] / time_deltas[k]) * 3.6
-                if time_deltas[k] > 0
-                else float("inf")
-            )
-            penalized_in_segment.append(
-                (k - 1, k, time_deltas[k], inst_speed_kmh, dist_between[k])
-            )
-    return penalized_in_segment
-
-
-def _find_best_segment(
-    n: int,
-    cum: List[float],
-    cum_adj_time: List[float],
-    target_m: float,
-    points: List[Tuple[float, float, datetime]],
-    adj_time_deltas: List[float],
-    time_deltas: List[float],
-    dist_between: List[float],
-    debug_info: dict[str, Any] | None,
-) -> Tuple[
-    Tuple[float, datetime | None, datetime | None],
-    int,
-    int,
-    List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]],
-]:
-    """Find best segment using sliding window."""
-    best = (float("inf"), None, None)
-    best_i = best_j = -1
-    penalized_intervals: List[
-        Tuple[int, int, List[Tuple[int, int, float, float, float]]]
-    ] = []
-
-    j = 0
-    for i in range(n):
-        j = max(j, i + 1)
-        while j < n and (cum[j] - cum[i]) < target_m:
-            j += 1
-        if j >= n:
-            break
-
-        duration = cum_adj_time[j] - cum_adj_time[i]
-        if debug_info is not None:
-            penalties = _collect_debug_penalties(
-                i, j, adj_time_deltas, time_deltas, dist_between
-            )
-            if penalties:
-                penalized_intervals.append((i, j, penalties))
-
-        if duration >= 0 and duration < best[0]:
-            best = (duration, points[i][2], points[j][2])
-            best_i = i
-            best_j = j
-
-    return best, best_i, best_j, penalized_intervals
-
-
-def _update_debug_info(
-    debug_info: dict[str, Any],
-    best_i: int,
-    best_j: int,
-    cum: List[float],
-    n: int,
-    penalized_intervals: List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]],
-) -> None:
-    """Update debug info with segment details."""
-    if best_i < 0 or best_j < 0:
-        return
-    debug_info.update(
-        {
-            "best_i": best_i,
-            "best_j": best_j,
-            "start_cum_dist": cum[best_i],
-            "end_cum_dist": cum[best_j],
-            "segment_dist": cum[best_j] - cum[best_i],
-            "num_points": n,
-            "total_dist": cum[-1] if n > 0 else 0,
-            "penalized_intervals": penalized_intervals,
-        }
-    )
-
-
-def best_segment_for_dist(
-    points: List[Tuple[float, float, datetime]],
-    target_m: float,
-    max_speed_kmh: float = 35.39,
-    penalty_seconds: float = 3.0,
-    debug_info: dict[str, Any] | None = None,
-) -> Tuple[float, datetime | None, datetime | None]:
-    """Return (best_adjusted_duration_seconds, start_time, end_time).
-
-    For the given target distance in meters.
-    """
-    if not points:
-        return (float("inf"), None, None)
-
-    n = len(points)
-    cum, time_deltas, dist_between, adj_time_deltas = _compute_intervals(
-        points, max_speed_kmh, penalty_seconds
-    )
-
-    cum_adj_time = [0.0] * n
-    for i in range(1, n):
-        cum_adj_time[i] = cum_adj_time[i - 1] + adj_time_deltas[i]
-
-    best, best_i, best_j, penalized_intervals = _find_best_segment(
-        n,
-        cum,
-        cum_adj_time,
-        target_m,
-        points,
-        adj_time_deltas,
-        time_deltas,
-        dist_between,
-        debug_info,
-    )
-
-    if debug_info is not None:
-        _update_debug_info(debug_info, best_i, best_j, cum, n, penalized_intervals)
-
-    return best
-
-
-def _collect_penalty_messages(
-    penalized_intervals_data: List[
-        Tuple[int, int, List[Tuple[int, int, float, float, float]]]
-    ],
-    points: List[Tuple[float, float, datetime]],
-    penalty_messages: Dict[str, str],
-) -> None:
-    """Collect penalty messages from penalized intervals data."""
-    for _, _, penalized_list in penalized_intervals_data:
-        for from_idx, to_idx, interval_dur, inst_speed_kmh, _ in penalized_list:
-            ts: datetime | None = None
-            try:
-                ts = points[from_idx][2]
-            except IndexError:
-                ts = None
-            ts_formatted = (
-                ts.strftime("%d/%m/%Y %H:%M:%S") if ts is not None else "unknown"
-            )
-            key = ts_formatted
-            msg = (
-                f"{ts_formatted} | interval {from_idx}->{to_idx} | "
-                f"{interval_dur:.2f}s | {inst_speed_kmh:.1f} km/h"
-            )
-            if key not in penalty_messages:
-                penalty_messages[key] = msg
 
 
 def _load_workout_points(
@@ -299,12 +86,14 @@ def _process_distance(
     workout_date: datetime | None,
     best_segments: Dict[float, List[Tuple[float, datetime | None]]],
     penalty_messages: Dict[str, str],
-    max_speed_kmh: float,
-    penalty_seconds: float,
-    debug: bool,
-    verbose: bool,
+    config: Dict[str, Any],
 ) -> None:
     """Process a single distance for the workout."""
+    max_speed_kmh = config.get("max_speed_kmh", 20.0)
+    penalty_seconds = config.get("penalty_seconds", 3.0)
+    debug = config.get("debug", False)
+    verbose = config.get("verbose", False)
+
     debug_info: Dict[str, Any] | None = {} if debug or verbose else None
     duration, s, _ = best_segment_for_dist(
         points, d, max_speed_kmh, penalty_seconds, debug_info
@@ -317,7 +106,20 @@ def _process_distance(
         and debug_info is not None
         and (penalized_intervals_data := debug_info.get("penalized_intervals"))
     ):  # type: ignore
-        _collect_penalty_messages(penalized_intervals_data, points, penalty_messages)
+        collect_penalty_messages(penalized_intervals_data, points, penalty_messages)
+
+
+def _should_skip_workout(
+    workout_date: datetime | None, start_date: date | None, end_date: date | None
+) -> bool:
+    """Check if workout should be skipped based on date filters."""
+    if not workout_date:
+        return False
+    if start_date and workout_date.date() < start_date:
+        return True
+    if end_date and workout_date.date() > end_date:
+        return True
+    return False
 
 
 def _process_workout(
@@ -326,22 +128,17 @@ def _process_workout(
     refs: set[str],
     running_workouts: Dict[str, Dict[str, datetime | None]],
     distances_m: List[float],
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    results: Dict[float, List[Tuple[float, datetime | None]]],
     penalty_messages: Dict[str, str],
-    max_speed_kmh: float,
-    penalty_seconds: float,
-    debug: bool,
-    verbose: bool,
-    start_date: date | None,
-    end_date: date | None,
+    config: Dict[str, Any],
 ) -> None:
     """Process a single workout and update results."""
     wd = running_workouts.get(workout_ref)
     workout_date = wd.get("start") if isinstance(wd, dict) else wd
 
-    if start_date and workout_date and workout_date.date() < start_date:
-        return
-    if end_date and workout_date and workout_date.date() > end_date:
+    if _should_skip_workout(
+        workout_date, config.get("start_date"), config.get("end_date")
+    ):
         return
 
     points = _load_workout_points(reader, refs)
@@ -351,16 +148,89 @@ def _process_workout(
     points.sort(key=lambda x: x[2])  # type: ignore
 
     for d in distances_m:
-        _process_distance(
-            d,
-            points,
-            workout_date,
+        _process_distance(d, points, workout_date, results, penalty_messages, config)
+
+
+def _print_debug_info(
+    debug: bool,
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    routes: List[Tuple[datetime | None, datetime | None, List[str]]],
+    workout_to_files: Dict[str, set[str]],
+) -> None:
+    """Print debug information."""
+    if not debug:
+        return
+    print(
+        f"DEBUG: running_workouts={len(running_workouts)}, "
+        f"routes_with_paths={len(routes)}"
+    )
+    print(f"DEBUG: matched workout->files entries={len(workout_to_files)}")
+    for k, v in list(workout_to_files.items())[:5]:
+        print(f"DEBUG: workout {k} -> {list(v)[:3]}")
+
+
+def _get_progress_iterable(iterable: Any, progress: bool, debug: bool) -> Any:
+    """Wrap iterable with progress bar if available."""
+    if progress and tqdm is not None:
+        return tqdm(list(iterable), desc="Workouts")
+    if progress and tqdm is None and debug:
+        print("DEBUG: tqdm not installed, progress disabled")
+    return iterable
+
+
+def _finalize_results(
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]], top_n: int
+) -> Dict[float, List[Tuple[float, datetime | None]]]:
+    """Sort and trim results to top N."""
+    results: Dict[float, List[Tuple[float, datetime | None]]] = {}
+    for d, segs in best_segments.items():
+        segs.sort(key=lambda x: x[0])  # type: ignore
+        results[d] = segs[:top_n]
+    return results
+
+
+def _load_export_data(
+    reader: ExportReader,
+) -> Tuple[
+    Dict[str, Dict[str, datetime | None]],
+    List[Tuple[datetime | None, datetime | None, List[str]]],
+    Dict[str, set[str]],
+]:
+    """Load workouts, routes, and match them."""
+    export_xml_name = reader.find_export_xml()
+    running_workouts = reader.collect_running_workouts(export_xml_name)
+    routes = reader.collect_routes(export_xml_name)
+    if not routes:
+        routes = reader.collect_routes_fallback(export_xml_name)
+    workout_to_files = match_routes_to_workouts(routes, running_workouts)
+    return running_workouts, routes, workout_to_files
+
+
+def _process_all_workouts(
+    reader: ExportReader,
+    workout_to_files: Dict[str, set[str]],
+    running_workouts: Dict[str, Dict[str, datetime | None]],
+    distances_m: List[float],
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    config: Dict[str, Any],
+) -> None:
+    """Process all workouts with progress tracking."""
+    iterable = _get_progress_iterable(
+        workout_to_files.items(),
+        config.get("progress", False),
+        config.get("debug", False),
+    )
+    for workout_ref, refs in iterable:
+        _process_workout(
+            reader,
+            workout_ref,
+            refs,
+            running_workouts,
+            distances_m,
             best_segments,
             penalty_messages,
-            max_speed_kmh,
-            penalty_seconds,
-            debug,
-            verbose,
+            config,
         )
 
 
@@ -368,18 +238,15 @@ def process_export(
     zip_path: str,
     distances_m: Iterable[float],
     top_n: int = 5,
-    debug: bool = False,
-    progress: bool = False,
-    max_speed_kmh: float = 35.39,
-    penalty_seconds: float = 3.0,
-    verbose: bool = False,
-    start_date: date | None = None,
-    end_date: date | None = None,
+    config: Dict[str, Any] | None = None,
 ) -> Tuple[Dict[float, List[Tuple[float, datetime | None]]], Dict[str, str]]:
     """Process Apple Health export to find fastest running segments.
 
     Returns tuple of (results_dict, penalty_messages_dict).
     """
+    if config is None:
+        config = {}
+
     distances_m = list(distances_m)
     best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {
         d: [] for d in distances_m
@@ -387,53 +254,21 @@ def process_export(
     penalty_messages: Dict[str, str] = {}
 
     with ExportReader(zip_path) as reader:
-        export_xml_name = reader.find_export_xml()
-        running_workouts = reader.collect_running_workouts(export_xml_name)
-        routes = reader.collect_routes(export_xml_name)
+        running_workouts, routes, workout_to_files = _load_export_data(reader)
+        _print_debug_info(
+            config.get("debug", False), running_workouts, routes, workout_to_files
+        )
+        _process_all_workouts(
+            reader,
+            workout_to_files,
+            running_workouts,
+            distances_m,
+            best_segments,
+            penalty_messages,
+            config,
+        )
 
-        if not routes:
-            routes = reader.collect_routes_fallback(export_xml_name)
-
-        workout_to_files = match_routes_to_workouts(routes, running_workouts)
-
-        if debug:
-            print(
-                f"DEBUG: running_workouts={len(running_workouts)}, "
-                f"routes_with_paths={len(routes)}"
-            )
-            print(f"DEBUG: matched workout->files entries={len(workout_to_files)}")
-            for k, v in list(workout_to_files.items())[:5]:
-                print(f"DEBUG: workout {k} -> {list(v)[:3]}")
-
-        iterable = workout_to_files.items()
-        if progress and tqdm is not None:
-            iterable = tqdm(list(iterable), desc="Workouts")
-        elif progress and tqdm is None and debug:
-            print("DEBUG: tqdm not installed, progress disabled")
-
-        for workout_ref, refs in iterable:
-            _process_workout(
-                reader,
-                workout_ref,
-                refs,
-                running_workouts,
-                distances_m,
-                best_segments,
-                penalty_messages,
-                max_speed_kmh,
-                penalty_seconds,
-                debug,
-                verbose,
-                start_date,
-                end_date,
-            )
-
-    results: Dict[float, List[Tuple[float, datetime | None]]] = {}
-    for d, segs in best_segments.items():
-        segs.sort(key=lambda x: x[0])  # type: ignore
-        results[d] = segs[:top_n]
-
-    return results, penalty_messages
+    return _finalize_results(best_segments, top_n), penalty_messages
 
 
 def format_duration(s: float | None) -> str:
@@ -476,11 +311,8 @@ def format_distance(d: float | None) -> str:
     return f"{int(round(d))} m"
 
 
-def _parse_cli_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Find top fastest running segments in an Apple Health export.zip"
-    )
+def _add_basic_args(parser: argparse.ArgumentParser) -> None:
+    """Add basic CLI arguments."""
     parser.add_argument("--zip", required=True, help="Path to export.zip")
     parser.add_argument(
         "--top", type=int, default=5, help="Number of top segments per distance"
@@ -508,6 +340,10 @@ def _parse_cli_args() -> argparse.Namespace:
         help="Write penalty messages to this text file (also prints to screen)",
     )
     parser.add_argument("--debug", action="store_true", help="Show debug messages")
+
+
+def _add_speed_args(parser: argparse.ArgumentParser) -> None:
+    """Add speed and penalty related arguments."""
     parser.add_argument(
         "--max-speed",
         type=float,
@@ -530,6 +366,10 @@ def _parse_cli_args() -> argparse.Namespace:
         default=3.0,
         help="Seconds to add to any interval exceeding --max-speed",
     )
+
+
+def _add_filter_args(parser: argparse.ArgumentParser) -> None:
+    """Add progress and date filter arguments."""
     parser.add_argument(
         "--progress",
         dest="progress",
@@ -549,6 +389,21 @@ def _parse_cli_args() -> argparse.Namespace:
         "--end-date", help="End date filter (YYYYMMDD format, inclusive)"
     )
     parser.set_defaults(progress=True)
+
+
+def _add_cli_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add all CLI arguments to parser."""
+    _add_basic_args(parser)
+    _add_speed_args(parser)
+    _add_filter_args(parser)
+
+
+def _parse_cli_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Find top fastest running segments in an Apple Health export.zip"
+    )
+    _add_cli_arguments(parser)
     return parser.parse_args()
 
 
@@ -575,7 +430,7 @@ def _format_penalty_lines(penalty_messages: Dict[str, str]) -> List[str]:
 
 
 def _format_results_lines(
-    results: Dict[float, List[Tuple[float, datetime | None]]]
+    results: Dict[float, List[Tuple[float, datetime | None]]],
 ) -> List[str]:
     """Format results for output."""
     lines: List[str] = []
@@ -617,17 +472,17 @@ def main():
         print(f"Error parsing date: {e}. Use YYYYMMDD format.")
         return
 
+    config: Dict[str, Any] = {
+        "debug": args.debug,
+        "progress": args.progress,
+        "max_speed_kmh": args.max_speed,
+        "penalty_seconds": args.speed_penalty,
+        "verbose": args.verbose,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
     results, penalty_messages = process_export(
-        args.zip,
-        args.distances,
-        top_n=args.top,
-        debug=args.debug,
-        progress=args.progress,
-        max_speed_kmh=args.max_speed,
-        penalty_seconds=args.speed_penalty,
-        verbose=args.verbose,
-        start_date=start_date,
-        end_date=end_date,
+        args.zip, args.distances, top_n=args.top, config=config
     )
 
     penalty_lines = _format_penalty_lines(penalty_messages)

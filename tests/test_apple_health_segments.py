@@ -22,11 +22,13 @@ if tools_path not in sys.path:
 # pylint: disable=import-error,wrong-import-position
 import apple_health_segments as ahs  # type: ignore # pyright: ignore
 import export_processor as ep  # type: ignore # pyright: ignore
+import segment_analysis as sa  # type: ignore # pyright: ignore
 from typing import cast, Any
 
 # Type annotations for imported functions
 ahs = cast(Any, ahs)  # Tell Pylance to treat ahs as Any to suppress unknown type warnings
 ep = cast(Any, ep)  # Tell Pylance to treat ep as Any to suppress unknown type warnings
+sa = cast(Any, sa)  # Tell Pylance to treat sa as Any to suppress unknown type warnings
 
 
 class TestHaversineMeters:
@@ -34,17 +36,17 @@ class TestHaversineMeters:
 
     def test_haversine_zero_distance(self):
         """Same coordinates should return ~0 meters."""
-        result = ahs.haversine_meters(0.0, 0.0, 0.0, 0.0)
+        result = sa.haversine_meters(0.0, 0.0, 0.0, 0.0)
         assert abs(result) < 1e-6, "Same coordinates should be ~0 meters apart"
 
     def test_haversine_one_degree_latitude(self):
         """One degree latitude is approximately 111 km."""
-        result = ahs.haversine_meters(0.0, 0.0, 1.0, 0.0)
+        result = sa.haversine_meters(0.0, 0.0, 1.0, 0.0)
         assert 110000 < result < 112000, "One degree latitude should be ~111 km"
 
     def test_haversine_one_degree_longitude_at_equator(self):
         """One degree longitude at equator is approximately 111 km."""
-        result = ahs.haversine_meters(0.0, 0.0, 0.0, 1.0)
+        result = sa.haversine_meters(0.0, 0.0, 0.0, 1.0)
         assert 110000 < result < 112000, "One degree longitude at equator should be ~111 km"
 
     def test_haversine_known_distance(self):
@@ -52,15 +54,15 @@ class TestHaversineMeters:
         # Gare Centrale Luxembourg to City Center (~2.5 km)
         lat1, lon1 = 49.6116, 6.1319
         lat2, lon2 = 49.6163, 6.1408
-        result = ahs.haversine_meters(lat1, lon1, lat2, lon2)
+        result = sa.haversine_meters(lat1, lon1, lat2, lon2)
         # Should be roughly 1 km (rough estimate)
         assert 500 < result < 2000, f"Distance should be ~1km, got {result}m"
 
     def test_haversine_symmetry(self):
         """Distance from A to B should equal distance from B to A."""
         lat1, lon1, lat2, lon2 = 40.7128, -74.0060, 34.0522, -118.2437
-        d1 = ahs.haversine_meters(lat1, lon1, lat2, lon2)
-        d2 = ahs.haversine_meters(lat2, lon2, lat1, lon1)
+        d1 = sa.haversine_meters(lat1, lon1, lat2, lon2)
+        d2 = sa.haversine_meters(lat2, lon2, lat1, lon1)
         assert abs(d1 - d2) < 1e-6, "Haversine distance should be symmetric"
 
 
@@ -188,7 +190,7 @@ class TestBestSegmentForDist:
 
     def test_segment_with_enough_points(self, simple_points):
         """Should find a segment for reasonable distances."""
-        result = ahs.best_segment_for_dist(simple_points, 100.0)
+        result = sa.best_segment_for_dist(simple_points, 100.0)
         duration, start_time, end_time = result
         assert duration != float('inf'), "Should find a segment"
         assert start_time is not None
@@ -197,19 +199,19 @@ class TestBestSegmentForDist:
 
     def test_segment_ordering(self, simple_points):
         """Segment should maintain chronological order."""
-        result = ahs.best_segment_for_dist(simple_points, 100.0)
+        result = sa.best_segment_for_dist(simple_points, 100.0)
         duration, start_time, end_time = result
         assert start_time <= end_time
 
     def test_segment_unrealistic_distance(self, simple_points):
         """Unrealistic distance should return infinity."""
-        result = ahs.best_segment_for_dist(simple_points, 100000000.0)
+        result = sa.best_segment_for_dist(simple_points, 100000000.0)
         duration, start_time, end_time = result
         assert duration == float('inf')
 
     def test_segment_empty_points(self):
         """Empty points list should return infinity."""
-        result = ahs.best_segment_for_dist([], 100.0)
+        result = sa.best_segment_for_dist([], 100.0)
         duration, start_time, end_time = result
         assert duration == float('inf')
         assert start_time is None
@@ -315,7 +317,7 @@ class TestIntegrationWithMockExport:
             mock_export_zip,
             distances_m=[10.0, 100.0],
             top_n=1,
-            progress=False
+            config={"progress": False}
         )
         
         assert isinstance(results, dict)
@@ -327,8 +329,7 @@ class TestIntegrationWithMockExport:
         results, penalties = ahs.process_export(
             mock_export_zip,
             distances_m=[10.0],
-            start_date=datetime(2024, 1, 16).date(),
-            progress=False
+            config={"start_date": datetime(2024, 1, 16).date(), "progress": False}
         )
         
         # Should have no results since test date is 2024-01-15
@@ -339,10 +340,12 @@ class TestIntegrationWithMockExport:
         results, penalties = ahs.process_export(
             mock_export_zip,
             distances_m=[10.0],
-            start_date=datetime(2024, 1, 1).date(),
-            end_date=datetime(2024, 1, 31).date(),
             top_n=1,
-            progress=False
+            config={
+                "start_date": datetime(2024, 1, 1).date(),
+                "end_date": datetime(2024, 1, 31).date(),
+                "progress": False
+            }
         )
         
         assert 10.0 in results
@@ -352,9 +355,11 @@ class TestIntegrationWithMockExport:
         results, penalties = ahs.process_export(
             mock_export_zip,
             distances_m=[10.0],
-            verbose=True,
-            progress=False,
-            max_speed_kmh=10.0  # Low threshold to trigger penalties
+            config={
+                "verbose": True,
+                "progress": False,
+                "max_speed_kmh": 10.0
+            }
         )
         
         assert isinstance(penalties, dict)
@@ -364,7 +369,7 @@ class TestIntegrationWithMockExport:
         result = ahs.process_export(
             mock_export_zip,
             distances_m=[10.0],
-            progress=False
+            config={"progress": False}
         )
         
         assert isinstance(result, tuple)
@@ -479,7 +484,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[400.0, 1000.0, 5000.0],
             top_n=3,
-            progress=False
+            config={"progress": False}
         )
         
         # Should have results for requested distances
@@ -494,7 +499,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[1000.0],
             top_n=5,
-            progress=False
+            config={"progress": False}
         )
         
         segments = results[1000.0]
@@ -511,7 +516,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[400.0, 1000.0],
             top_n=3,
-            progress=False
+            config={"progress": False}
         )
         
         for distance, segments in results.items():
@@ -524,8 +529,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[1000.0],
             top_n=10,
-            progress=False,
-            start_date=start_date
+            config={"progress": False, "start_date": start_date}
         )
         
         segments = results[1000.0]
@@ -540,8 +544,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[1000.0],
             top_n=10,
-            progress=False,
-            end_date=end_date
+            config={"progress": False, "end_date": end_date}
         )
         
         segments = results[1000.0]
@@ -557,9 +560,11 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[1000.0],
             top_n=10,
-            progress=False,
-            start_date=start_date,
-            end_date=end_date
+            config={
+                "progress": False,
+                "start_date": start_date,
+                "end_date": end_date
+            }
         )
         
         segments = results[1000.0]
@@ -574,18 +579,22 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[1000.0],
             top_n=3,
-            progress=False,
-            max_speed_kmh=10.0,  # Very restrictive
-            penalty_seconds=3.0
+            config={
+                "progress": False,
+                "max_speed_kmh": 10.0,
+                "penalty_seconds": 3.0
+            }
         )
         
         results_lenient, _ = ahs.process_export(
             export_zip_path,
             distances_m=[1000.0],
             top_n=3,
-            progress=False,
-            max_speed_kmh=50.0,  # Very lenient
-            penalty_seconds=3.0
+            config={
+                "progress": False,
+                "max_speed_kmh": 50.0,
+                "penalty_seconds": 3.0
+            }
         )
         
         # Both should have similar number of segments found
@@ -598,9 +607,11 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=[400.0, 1000.0],
             top_n=3,
-            progress=False,
-            verbose=True,
-            max_speed_kmh=15.0  # Lower threshold to trigger penalties
+            config={
+                "progress": False,
+                "verbose": True,
+                "max_speed_kmh": 15.0
+            }
         )
         
         # penalties should be a dict
@@ -618,7 +629,7 @@ class TestRealExportIntegration:
             export_zip_path,
             distances_m=distances,
             top_n=2,
-            progress=False
+            config={"progress": False}
         )
         
         # Should have results for each distance
@@ -628,15 +639,14 @@ class TestRealExportIntegration:
 
     def test_process_export_consistency_across_runs(self, export_zip_path):
         """Running the same export twice should give identical results."""
-        kwargs = {
-            'distances_m': [1000.0],
-            'top_n': 3,
-            'progress': False,
-            'max_speed_kmh': 20.0
-        }
+        config = {"progress": False, "max_speed_kmh": 20.0}
         
-        results1, _ = ahs.process_export(export_zip_path, **kwargs)
-        results2, _ = ahs.process_export(export_zip_path, **kwargs)
+        results1, _ = ahs.process_export(
+            export_zip_path, distances_m=[1000.0], top_n=3, config=config
+        )
+        results2, _ = ahs.process_export(
+            export_zip_path, distances_m=[1000.0], top_n=3, config=config
+        )
         
         # Results should be identical
         assert len(results1[1000.0]) == len(results2[1000.0])
