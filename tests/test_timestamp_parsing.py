@@ -14,9 +14,9 @@ tools_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tool
 if tools_path not in sys.path:
     sys.path.insert(0, tools_path)
 
-import apple_health_segments as ahs  # type: ignore # noqa: E402
+import export_processor as ep  # type: ignore # noqa: E402
 
-ahs = cast(Any, ahs)
+ep = cast(Any, ep)
 
 
 class TestParseTimestamp:
@@ -24,7 +24,7 @@ class TestParseTimestamp:
 
     def test_parse_iso_format(self):
         """Should parse ISO 8601 format."""
-        result = ahs.parse_timestamp("2024-01-15T10:30:45Z")  # type: ignore
+        result = ep.parse_timestamp("2024-01-15T10:30:45Z")  # type: ignore
         assert result.year == 2024  # type: ignore
         assert result.month == 1  # type: ignore
         assert result.day == 15  # type: ignore
@@ -33,7 +33,7 @@ class TestParseTimestamp:
 
     def test_parse_apple_format(self):
         """Should parse Apple's timestamp format."""
-        result = ahs.parse_timestamp("2024-01-15 10:30:45 +0000")  # type: ignore
+        result = ep.parse_timestamp("2024-01-15 10:30:45 +0000")  # type: ignore
         assert result.year == 2024  # type: ignore
         assert result.month == 1  # type: ignore
         assert result.day == 15  # type: ignore
@@ -47,18 +47,18 @@ class TestParseTimestamp:
             "2024-01-15T10:30:45+00:00",
         ]
         for fmt in formats:
-            result = ahs.parse_timestamp(fmt)  # type: ignore
+            result = ep.parse_timestamp(fmt)  # type: ignore
             assert isinstance(result, datetime), f"Failed to parse: {fmt}"
 
     def test_parse_empty_string_raises(self):
         """Empty string should raise ValueError."""
         with pytest.raises(ValueError):
-            ahs.parse_timestamp("")  # type: ignore
+            ep.parse_timestamp("")  # type: ignore
 
     def test_parse_none_raises(self):
         """None should raise an error."""
         with pytest.raises((ValueError, TypeError, AttributeError)):
-            ahs.parse_timestamp(None)  # type: ignore
+            ep.parse_timestamp(None)  # type: ignore
 
 
 if __name__ == "__main__":
