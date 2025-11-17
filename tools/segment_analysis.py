@@ -82,13 +82,10 @@ def _collect_debug_penalties(
 
 def _find_best_segment(
     n: int,
-    cum: List[float],
-    cum_adj_time: List[float],
+    distances: Dict[str, List[float]],
     target_m: float,
     points: List[Tuple[float, float, datetime]],
-    adj_time_deltas: List[float],
-    time_deltas: List[float],
-    dist_between: List[float],
+    intervals: Dict[str, List[float]],
     debug_info: dict[str, Any] | None,
 ) -> Tuple[
     Tuple[float, datetime | None, datetime | None],
@@ -106,15 +103,15 @@ def _find_best_segment(
     j = 0
     for i in range(n):
         j = max(j, i + 1)
-        while j < n and (cum[j] - cum[i]) < target_m:
+        while j < n and (distances["cum"][j] - distances["cum"][i]) < target_m:
             j += 1
         if j >= n:
             break
 
-        duration = cum_adj_time[j] - cum_adj_time[i]
+        duration = distances["cum_adj_time"][j] - distances["cum_adj_time"][i]
         if debug_info is not None:
             penalties = _collect_debug_penalties(
-                i, j, adj_time_deltas, time_deltas, dist_between
+                i, j, intervals["adj_time"], intervals["time"], intervals["dist"]
             )
             if penalties:
                 penalized_intervals.append((i, j, penalties))
@@ -175,16 +172,11 @@ def best_segment_for_dist(
     for i in range(1, n):
         cum_adj_time[i] = cum_adj_time[i - 1] + adj_time_deltas[i]
 
+    distances = {"cum": cum, "cum_adj_time": cum_adj_time}
+    intervals = {"adj_time": adj_time_deltas, "time": time_deltas, "dist": dist_between}
+
     best, best_i, best_j, penalized_intervals = _find_best_segment(
-        n,
-        cum,
-        cum_adj_time,
-        target_m,
-        points,
-        adj_time_deltas,
-        time_deltas,
-        dist_between,
-        debug_info,
+        n, distances, target_m, points, intervals, debug_info
     )
 
     if debug_info is not None:
