@@ -119,7 +119,7 @@ class ExportReader:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: object) -> None:
         self.zipfile.close()
 
     def find_export_xml(self) -> str:
@@ -187,7 +187,9 @@ class ExportReader:
                     paths.append(path)
         return paths
 
-    def collect_routes(self, xml_name: str) -> List[Tuple[datetime | None, datetime | None, List[str]]]:
+    def collect_routes(
+        self, xml_name: str
+    ) -> List[Tuple[datetime | None, datetime | None, List[str]]]:
         """Parse workout routes from export XML."""
         routes: List[Tuple[datetime | None, datetime | None, List[str]]] = []
         with self.zipfile.open(xml_name) as ef:
@@ -201,7 +203,9 @@ class ExportReader:
                 elem.clear()
         return routes
 
-    def _parse_route_from_text(self, opening: str, body: str) -> Tuple[datetime | None, datetime | None, List[str]] | None:
+    def _parse_route_from_text(
+        self, opening: str, body: str
+    ) -> Tuple[datetime | None, datetime | None, List[str]] | None:
         """Parse a single route from text match."""
         def find_attr(s: str, name: str) -> str | None:
             p = re.search(rf'{name}="([^"]+)"', s)
@@ -222,12 +226,16 @@ class ExportReader:
             return (rstart_dt, rend_dt, paths)
         return None
 
-    def collect_routes_fallback(self, xml_name: str) -> List[Tuple[datetime | None, datetime | None, List[str]]]:
+    def collect_routes_fallback(
+        self, xml_name: str
+    ) -> List[Tuple[datetime | None, datetime | None, List[str]]]:
         """Fallback text-based route parsing."""
         routes: List[Tuple[datetime | None, datetime | None, List[str]]] = []
         try:
             data = self.zipfile.read(xml_name).decode("utf-8", errors="ignore")
-            pattern = re.compile(r"<WorkoutRoute([^>]*)>(.*?)</WorkoutRoute>", re.DOTALL)
+            pattern = re.compile(
+                r"<WorkoutRoute([^>]*)>(.*?)</WorkoutRoute>", re.DOTALL
+            )
             for m in pattern.finditer(data):
                 route = self._parse_route_from_text(m.group(1), m.group(2))
                 if route:
@@ -292,5 +300,7 @@ def match_routes_to_workouts(
     """Match route files to workouts by time overlap."""
     workout_to_files: defaultdict[str, set[str]] = defaultdict(set)
     for rstart, rend, paths in routes:
-        _add_route_to_matching_workouts(rstart, rend, paths, workouts, workout_to_files)
+        _add_route_to_matching_workouts(
+            rstart, rend, paths, workouts, workout_to_files
+        )
     return workout_to_files

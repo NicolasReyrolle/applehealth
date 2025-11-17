@@ -21,10 +21,12 @@ if tools_path not in sys.path:
 
 # pylint: disable=import-error,wrong-import-position
 import apple_health_segments as ahs  # type: ignore # pyright: ignore
+import export_processor as ep  # type: ignore # pyright: ignore
 from typing import cast, Any
 
 # Type annotations for imported functions
 ahs = cast(Any, ahs)  # Tell Pylance to treat ahs as Any to suppress unknown type warnings
+ep = cast(Any, ep)  # Tell Pylance to treat ep as Any to suppress unknown type warnings
 
 
 class TestHaversineMeters:
@@ -67,7 +69,7 @@ class TestParseTimestamp:
 
     def test_parse_iso_format(self):
         """Should parse ISO 8601 format."""
-        result = ahs.parse_timestamp("2024-01-15T10:30:45Z")
+        result = ep.parse_timestamp("2024-01-15T10:30:45Z")
         assert result.year == 2024
         assert result.month == 1
         assert result.day == 15
@@ -76,7 +78,7 @@ class TestParseTimestamp:
 
     def test_parse_apple_format(self):
         """Should parse Apple's timestamp format."""
-        result = ahs.parse_timestamp("2024-01-15 10:30:45 +0000")
+        result = ep.parse_timestamp("2024-01-15 10:30:45 +0000")
         assert result.year == 2024
         assert result.month == 1
         assert result.day == 15
@@ -90,18 +92,18 @@ class TestParseTimestamp:
             "2024-01-15T10:30:45+00:00",
         ]
         for fmt in formats:
-            result = ahs.parse_timestamp(fmt)
+            result = ep.parse_timestamp(fmt)
             assert isinstance(result, datetime), f"Failed to parse: {fmt}"
 
     def test_parse_empty_string_raises(self):
         """Empty string should raise ValueError."""
         with pytest.raises(ValueError):
-            ahs.parse_timestamp("")
+            ep.parse_timestamp("")
 
     def test_parse_none_raises(self):
         """None should raise an error."""
         with pytest.raises((ValueError, TypeError, AttributeError)):
-            ahs.parse_timestamp(None)
+            ep.parse_timestamp(None)
 
 
 class TestFormatDuration:
