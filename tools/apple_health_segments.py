@@ -20,9 +20,8 @@ import math
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from typing import Iterable, List, Tuple, BinaryIO, Any, Dict
-from dateutil import parser as dateutil_parser
 
-from export_processor import ExportReader, match_routes_to_workouts
+from export_processor import ExportReader, match_routes_to_workouts, parse_timestamp
 
 try:
     from tqdm import tqdm
@@ -44,13 +43,6 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     )
     return 2 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def parse_timestamp(s: str) -> datetime:
-    """Parse timestamp string using dateutil for robust format handling."""
-    if not s:
-        raise ValueError("Empty timestamp")
-    return dateutil_parser.parse(s)
 
 
 def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] | None:

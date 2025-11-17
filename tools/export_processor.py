@@ -7,8 +7,14 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime
 from typing import List, Tuple, Dict
+from dateutil import parser as dateutil_parser
 
-from apple_health_segments import parse_timestamp
+
+def parse_timestamp(s: str) -> datetime:
+    """Parse timestamp string using dateutil for robust format handling."""
+    if not s:
+        raise ValueError("Empty timestamp")
+    return dateutil_parser.parse(s)
 
 
 class ExportReader:
