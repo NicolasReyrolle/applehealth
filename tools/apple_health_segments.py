@@ -38,9 +38,9 @@ DATE_FMT = "%d/%m/%Y"
 
 def _load_workout_points(
     reader: ExportReader, refs: set[str]
-) -> List[Tuple[float, float, datetime]]:
+) -> List[Tuple[float, float, float, datetime]]:
     """Load GPS points from workout route files."""
-    points: List[Tuple[float, float, datetime]] = []
+    points: List[Tuple[float, float, float, datetime]] = []
     for ref in refs:
         try:
             z_path = reader.resolve_zip_path(ref)
@@ -49,8 +49,8 @@ def _load_workout_points(
                 if not z_path:
                     continue
             with reader.zipfile.open(z_path) as rf:
-                for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
-                    points.append((lat, lon, ts))
+                for lat, lon, ele, ts in stream_points_from_route(rf):  # type: ignore
+                    points.append((lat, lon, ele, ts))
         except (KeyError, ET.ParseError, ValueError, TypeError):
             continue
     return points
@@ -82,9 +82,9 @@ def _log_debug_segment(
 
 def _process_distance(
     d: float,
-    points: List[Tuple[float, float, datetime]],
+    points: List[Tuple[float, float, float, datetime]],
     workout_date: datetime | None,
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]],
     penalty_messages: Dict[str, str],
     config: Dict[str, Any],
 ) -> None:
@@ -95,11 +95,11 @@ def _process_distance(
     verbose = config.get("verbose", False)
 
     debug_info: Dict[str, Any] | None = {} if debug or verbose else None
-    duration, s, _ = best_segment_for_dist(
+    duration, s, _, elevation_change, avg_speed = best_segment_for_dist(
         points, d, max_speed_kmh, penalty_seconds, debug_info
     )
     if duration != float("inf") and s:
-        best_segments[d].append((duration, workout_date))
+        best_segments[d].append((duration, workout_date, elevation_change, avg_speed))
         _log_debug_segment(debug, workout_date, d, duration, debug_info)
     if (
         verbose
@@ -128,7 +128,7 @@ def _process_workout(
     refs: set[str],
     running_workouts: Dict[str, Dict[str, datetime | None]],
     distances_m: List[float],
-    results: Dict[float, List[Tuple[float, datetime | None]]],
+    results: Dict[float, List[Tuple[float, datetime | None, float, float]]],
     penalty_messages: Dict[str, str],
     config: Dict[str, Any],
 ) -> None:
@@ -145,7 +145,7 @@ def _process_workout(
     if not points:
         return
 
-    points.sort(key=lambda x: x[2])  # type: ignore
+    points.sort(key=lambda x: x[3])  # type: ignore
 
     for d in distances_m:
         _process_distance(d, points, workout_date, results, penalty_messages, config)
@@ -179,10 +179,10 @@ def _get_progress_iterable(iterable: Any, progress: bool, debug: bool) -> Any:
 
 
 def _finalize_results(
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]], top_n: int
-) -> Dict[float, List[Tuple[float, datetime | None]]]:
+    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]], top_n: int
+) -> Dict[float, List[Tuple[float, datetime | None, float, float]]]:
     """Sort and trim results to top N."""
-    results: Dict[float, List[Tuple[float, datetime | None]]] = {}
+    results: Dict[float, List[Tuple[float, datetime | None, float, float]]] = {}
     for d, segs in best_segments.items():
         segs.sort(key=lambda x: x[0])  # type: ignore
         results[d] = segs[:top_n]
@@ -211,7 +211,7 @@ def _process_all_workouts(
     workout_to_files: Dict[str, set[str]],
     running_workouts: Dict[str, Dict[str, datetime | None]],
     distances_m: List[float],
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]],
     penalty_messages: Dict[str, str],
     config: Dict[str, Any],
 ) -> None:
@@ -239,7 +239,7 @@ def process_export(
     distances_m: Iterable[float],
     top_n: int = 5,
     config: Dict[str, Any] | None = None,
-) -> Tuple[Dict[float, List[Tuple[float, datetime | None]]], Dict[str, str]]:
+) -> Tuple[Dict[float, List[Tuple[float, datetime | None, float, float]]], Dict[str, str]]:
     """Process Apple Health export to find fastest running segments.
 
     Returns tuple of (results_dict, penalty_messages_dict).
@@ -248,7 +248,7 @@ def process_export(
         config = {}
 
     distances_m = list(distances_m)
-    best_segments: Dict[float, List[Tuple[float, datetime | None]]] = {
+    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]] = {
         d: [] for d in distances_m
     }
     penalty_messages: Dict[str, str] = {}
@@ -280,6 +280,16 @@ def format_duration(s: float | None) -> str:
     minutes = (total % 3600) // 60
     seconds = total % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def format_pace(avg_speed_kmh: float) -> str:
+    """Format speed as pace in MM:SS per km."""
+    if avg_speed_kmh <= 0:
+        return "-"
+    pace_per_km_seconds = 3600 / avg_speed_kmh
+    minutes = int(pace_per_km_seconds // 60)
+    seconds = int(pace_per_km_seconds % 60)
+    return f"{minutes}:{seconds:02d}/km"
 
 
 def format_distance(d: float | None) -> str:
@@ -430,7 +440,7 @@ def _format_penalty_lines(penalty_messages: Dict[str, str]) -> List[str]:
 
 
 def _format_results_lines(
-    results: Dict[float, List[Tuple[float, datetime | None]]],
+    results: Dict[float, List[Tuple[float, datetime | None, float, float]]],
 ) -> List[str]:
     """Format results for output."""
     lines: List[str] = []
@@ -440,7 +450,7 @@ def _format_results_lines(
         if not rows:
             lines.append("  No segments found")
             continue
-        for idx, (duration, workout_dt) in enumerate(rows, start=1):
+        for idx, (duration, workout_dt, elevation_change, avg_speed) in enumerate(rows, start=1):
             if workout_dt:
                 try:
                     date_str = workout_dt.strftime("%d/%m/%Y")
@@ -448,7 +458,9 @@ def _format_results_lines(
                     date_str = workout_dt.isoformat()
             else:
                 date_str = "unknown"
-            lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}")
+            ele_str = f"{elevation_change:+.0f}m" if elevation_change != 0 else "0m"
+            pace_str = format_pace(avg_speed)
+            lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}  {ele_str}  {pace_str}")
     return lines
 
 
