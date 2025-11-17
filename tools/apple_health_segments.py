@@ -572,8 +572,8 @@ def format_distance(d: float | None) -> str:
     return f"{int(round(d))} m"
 
 
-def main():
-    """Main entry point for CLI."""
+def _parse_cli_args() -> argparse.Namespace:
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Find top fastest running segments in an Apple Health export.zip"
     )
@@ -626,7 +626,6 @@ def main():
         default=3.0,
         help="Seconds to add to any interval exceeding --max-speed",
     )
-    # progress is enabled by default; use --no-progress to disable
     parser.add_argument(
         "--progress",
         dest="progress",
@@ -646,16 +645,70 @@ def main():
         "--end-date", help="End date filter (YYYYMMDD format, inclusive)"
     )
     parser.set_defaults(progress=True)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    # Parse and validate date filters
+
+def _parse_date_filters(args: argparse.Namespace) -> Tuple[date | None, date | None]:
+    """Parse and validate date filter arguments."""
     start_date = None
     end_date = None
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, "%Y%m%d").date()
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, "%Y%m%d").date()
+    return start_date, end_date
+
+
+def _format_penalty_lines(penalty_messages: Dict[str, str]) -> List[str]:
+    """Format penalty messages for output."""
+    if not penalty_messages:
+        return []
+    lines = ["", "=== PENALTY WARNINGS ==="]
+    for key in sorted(penalty_messages.keys()):
+        lines.append(penalty_messages[key])
+    lines.append("")
+    return lines
+
+
+def _format_results_lines(
+    results: Dict[float, List[Tuple[float, datetime | None]]]
+) -> List[str]:
+    """Format results for output."""
+    lines: List[str] = []
+    for d in sorted(results.keys()):
+        lines.append(f"\nDistance: {format_distance(d)}")
+        rows = results[d]
+        if not rows:
+            lines.append("  No segments found")
+            continue
+        for idx, (duration, workout_dt) in enumerate(rows, start=1):
+            if workout_dt:
+                try:
+                    date_str = workout_dt.strftime("%d/%m/%Y")
+                except (AttributeError, ValueError):
+                    date_str = workout_dt.isoformat()
+            else:
+                date_str = "unknown"
+            lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}")
+    return lines
+
+
+def _write_output_file(filepath: str, lines: List[str]) -> None:
+    """Write lines to output file."""
     try:
-        if args.start_date:
-            start_date = datetime.strptime(args.start_date, "%Y%m%d").date()
-        if args.end_date:
-            end_date = datetime.strptime(args.end_date, "%Y%m%d").date()
+        with open(filepath, "w", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+    except OSError as e:
+        print(f"Error writing file: {e}")
+
+
+def main():
+    """Main entry point for CLI."""
+    args = _parse_cli_args()
+
+    try:
+        start_date, end_date = _parse_date_filters(args)
     except ValueError as e:
         print(f"Error parsing date: {e}. Use YYYYMMDD format.")
         return
@@ -673,60 +726,18 @@ def main():
         end_date=end_date,
     )
 
-    # Print results
-    out_lines: List[str] = []
+    penalty_lines = _format_penalty_lines(penalty_messages)
+    out_lines = _format_results_lines(results)
 
-    # Add penalty messages to output if any
-    penalty_lines: List[str] = []
-    if penalty_messages:
-        penalty_lines.append("")
-        penalty_lines.append("=== PENALTY WARNINGS ===")
-        # Sort penalty messages by timestamp (key is already in DD/MM/YYYY HH:MM:SS format)
-        for key in sorted(penalty_messages.keys()):
-            penalty_lines.append(penalty_messages[key])
-        penalty_lines.append("")
-
-    for d in sorted(results.keys()):
-        out_lines.append(f"\nDistance: {format_distance(d)}")
-        rows = results[d]
-        if not rows:
-            out_lines.append("  No segments found")
-            continue
-        for idx, (duration, workout_dt) in enumerate(rows, start=1):
-            if workout_dt:
-                try:
-                    date_str = workout_dt.strftime("%d/%m/%Y")
-                except (AttributeError, ValueError):
-                    date_str = workout_dt.isoformat()
-            else:
-                date_str = "unknown"
-            out_lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}")
-
-    # print penalty messages to stdout
     for line in penalty_lines:
         print(line)
-
-    # print results to stdout
     for line in out_lines:
         print(line)
 
-    # optionally write penalty messages to file
     if args.penalty_file and penalty_messages:
-        try:
-            with open(args.penalty_file, "w", encoding="utf-8") as fh:
-                for line in penalty_lines:
-                    fh.write(line + "\n")
-        except OSError as e:
-            print(f"Error writing penalty file: {e}")
-
-    # optionally write main results to file
+        _write_output_file(args.penalty_file, penalty_lines)
     if args.output_file:
-        try:
-            with open(args.output_file, "w", encoding="utf-8") as fh:
-                for line in out_lines:
-                    fh.write(line + "\n")
-        except OSError as e:
-            print(f"Error writing output file: {e}")
+        _write_output_file(args.output_file, out_lines)
 
 
 if __name__ == "__main__":
