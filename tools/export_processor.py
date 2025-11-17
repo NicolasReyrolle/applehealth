@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as etree
 import zipfile
 from collections import defaultdict
 from datetime import datetime
@@ -17,7 +17,7 @@ def parse_timestamp(s: str) -> datetime:
     return dateutil_parser.parse(s)
 
 
-def _get_location_attrs(elem: ET.Element) -> Tuple[str | None, str | None, str | None]:
+def _get_location_attrs(elem: etree.Element) -> Tuple[str | None, str | None, str | None]:
     """Extract lat, lon, and timestamp attributes from element."""
     lat = elem.get("latitude") or elem.get("lat")
     lon = elem.get("longitude") or elem.get("lon")
@@ -25,7 +25,7 @@ def _get_location_attrs(elem: ET.Element) -> Tuple[str | None, str | None, str |
     return lat, lon, ts
 
 
-def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] | None:
+def _parse_location_element(elem: etree.Element) -> Tuple[float, float, datetime] | None:
     """Parse Location element and return (lat, lon, timestamp) or None."""
     lat, lon, ts = _get_location_attrs(elem)
     if lat and lon and ts:
@@ -37,7 +37,7 @@ def _parse_location_element(elem: ET.Element) -> Tuple[float, float, datetime] |
 
 
 def _parse_trkpt_with_time(
-    elem: ET.Element, current_time: str | None
+    elem: etree.Element, current_time: str | None
 ) -> Tuple[float, float, datetime] | None:
     """Parse trkpt element with stored time data."""
     lat = elem.get("lat")
@@ -52,7 +52,7 @@ def _parse_trkpt_with_time(
 
 def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
     """Parse XML data and yield GPS points."""
-    it = ET.iterparse(bio, events=("end",))
+    it = etree.iterparse(bio, events=("end",))
     current_trkpt_data: Dict[str, str] = {}
 
     for _, elem in it:
@@ -156,7 +156,7 @@ class ExportReader:
                 return n
         raise FileNotFoundError("Could not find export XML inside the zip")
 
-    def _parse_workout_times(self, elem: ET.Element) -> Tuple[datetime | None, datetime | None]:
+    def _parse_workout_times(self, elem: etree.Element) -> Tuple[datetime | None, datetime | None]:
         """Extract start and end times from workout element."""
         start = elem.get("startDate") or elem.get("creationDate") or elem.get("start")
         end = elem.get("endDate") or elem.get("end")
@@ -174,7 +174,7 @@ class ExportReader:
         """Parse running workouts from export XML."""
         workouts: Dict[str, Dict[str, datetime | None]] = {}
         with self.zipfile.open(xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
+            it = etree.iterparse(ef, events=("end",))
             idx = 0
             for _, elem in it:
                 if elem.tag.split("}")[-1] == "Workout":
@@ -185,7 +185,7 @@ class ExportReader:
                 elem.clear()
         return workouts
 
-    def _parse_route_times(self, elem: ET.Element) -> Tuple[datetime | None, datetime | None]:
+    def _parse_route_times(self, elem: etree.Element) -> Tuple[datetime | None, datetime | None]:
         """Extract start and end times from route element."""
         rstart = elem.get("startDate") or elem.get("creationDate") or None
         rend = elem.get("endDate") or None
@@ -199,7 +199,7 @@ class ExportReader:
             rend_dt = None
         return rstart_dt, rend_dt
 
-    def _extract_file_paths(self, elem: ET.Element) -> List[str]:
+    def _extract_file_paths(self, elem: etree.Element) -> List[str]:
         """Extract file paths from route element."""
         paths: List[str] = []
         for fr in elem.iter():
@@ -215,7 +215,7 @@ class ExportReader:
         """Parse workout routes from export XML."""
         routes: List[Tuple[datetime | None, datetime | None, List[str]]] = []
         with self.zipfile.open(xml_name) as ef:
-            it = ET.iterparse(ef, events=("end",))
+            it = etree.iterparse(ef, events=("end",))
             for _, elem in it:
                 if elem.tag.split("}")[-1] == "WorkoutRoute":
                     rstart_dt, rend_dt = self._parse_route_times(elem)
