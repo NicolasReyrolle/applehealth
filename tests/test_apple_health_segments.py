@@ -10,6 +10,7 @@ Or with coverage: python -m pytest tests/ -v --cov=tools --cov-report=html
 import sys
 import os
 import zipfile
+import argparse
 from datetime import datetime, timedelta
 from io import BytesIO
 import pytest
@@ -377,6 +378,27 @@ class TestIntegrationWithMockExport:
         assert isinstance(result[0], dict)
         assert isinstance(result[1], dict)
 
+    def test_process_export_with_none_config(self, mock_export_zip):
+        """Should handle None config by using defaults."""
+        results, penalties = ahs.process_export(
+            mock_export_zip,
+            distances_m=[10.0],
+            top_n=1,
+            config=None
+        )
+        assert isinstance(results, dict)
+        assert isinstance(penalties, dict)
+
+    def test_process_export_empty_distances(self, mock_export_zip):
+        """Should handle empty distances list."""
+        results, penalties = ahs.process_export(
+            mock_export_zip,
+            distances_m=[],
+            config={"progress": False}
+        )
+        assert results == {}
+        assert isinstance(penalties, dict)
+
 
 class TestStreamPointsFromRoute:
     """Unit tests for GPX/XML point streaming."""
@@ -703,6 +725,198 @@ class TestEdgeCases:
         result = ahs.best_segment_for_dist(points, 100.0)
         # Should not crash
         assert isinstance(result, tuple)
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
+
+
+class TestFormatPenaltyLines:
+    """Test penalty message formatting."""
+
+    def test_format_empty_penalties(self):
+        """Empty penalties should return empty list."""
+        result = ahs._format_penalty_lines({})
+        assert result == []
+
+    def test_format_single_penalty(self):
+        """Single penalty should be formatted correctly."""
+        penalties = {"key1": "Warning: Speed exceeded"}
+        result = ahs._format_penalty_lines(penalties)
+        assert len(result) == 4
+        assert result[0] == ""
+        assert result[1] == "=== PENALTY WARNINGS ==="
+        assert result[2] == "Warning: Speed exceeded"
+        assert result[3] == ""
+
+    def test_format_multiple_penalties_sorted(self):
+        """Multiple penalties should be sorted by key."""
+        penalties = {"z_key": "Warning Z", "a_key": "Warning A"}
+        result = ahs._format_penalty_lines(penalties)
+        assert "Warning A" in result[2]
+        assert "Warning Z" in result[3]
+
+
+class TestFormatResultsLines:
+    """Test results formatting."""
+
+    def test_format_empty_results(self):
+        """Empty results should return empty list."""
+        result = ahs._format_results_lines({})
+        assert result == []
+
+    def test_format_results_no_segments(self):
+        """Distance with no segments should show message."""
+        results = {1000.0: []}
+        result = ahs._format_results_lines(results)
+        assert any("1 km" in line for line in result)
+        assert any("No segments found" in line for line in result)
+
+    def test_format_results_with_segments(self):
+        """Results with segments should format correctly."""
+        dt = datetime(2024, 1, 15, 10, 0, 0)
+        results = {400.0: [(100.5, dt), (105.2, dt)]}
+        result = ahs._format_results_lines(results)
+        assert any("400 m" in line for line in result)
+        assert any("15/01/2024" in line for line in result)
+        assert any("00:01:40" in line or "00:01:41" in line for line in result)
+
+    def test_format_results_with_none_date(self):
+        """Results with None date should show 'unknown'."""
+        results = {1000.0: [(120.0, None)]}
+        result = ahs._format_results_lines(results)
+        assert any("unknown" in line for line in result)
+
+
+class TestWriteOutputFile:
+    """Test file writing functionality."""
+
+    def test_write_output_file_success(self, tmp_path):
+        """Should write lines to file successfully."""
+        filepath = tmp_path / "output.txt"
+        lines = ["Line 1", "Line 2", "Line 3"]
+        ahs._write_output_file(str(filepath), lines)
+        
+        content = filepath.read_text(encoding="utf-8")
+        assert "Line 1\n" in content
+        assert "Line 2\n" in content
+        assert "Line 3\n" in content
+
+    def test_write_output_file_invalid_path(self, capsys):
+        """Should handle invalid path gracefully."""
+        ahs._write_output_file("/invalid/path/file.txt", ["test"])
+        captured = capsys.readouterr()
+        assert "Error writing file" in captured.out
+
+
+class TestParseDateFilters:
+    """Test date filter parsing."""
+
+    def test_parse_no_dates(self):
+        """Should return None for both dates when not provided."""
+        args = argparse.Namespace(start_date=None, end_date=None)
+        start, end = ahs._parse_date_filters(args)
+        assert start is None
+        assert end is None
+
+    def test_parse_start_date_only(self):
+        """Should parse start date correctly."""
+        args = argparse.Namespace(start_date="20240115", end_date=None)
+        start, end = ahs._parse_date_filters(args)
+        assert start == datetime(2024, 1, 15).date()
+        assert end is None
+
+    def test_parse_end_date_only(self):
+        """Should parse end date correctly."""
+        args = argparse.Namespace(start_date=None, end_date="20241231")
+        start, end = ahs._parse_date_filters(args)
+        assert start is None
+        assert end == datetime(2024, 12, 31).date()
+
+    def test_parse_both_dates(self):
+        """Should parse both dates correctly."""
+        args = argparse.Namespace(start_date="20240101", end_date="20241231")
+        start, end = ahs._parse_date_filters(args)
+        assert start == datetime(2024, 1, 1).date()
+        assert end == datetime(2024, 12, 31).date()
+
+
+class TestHelperFunctions:
+    """Test various helper functions."""
+
+    def test_should_skip_workout_no_date(self):
+        """Should not skip workout with no date."""
+        result = ahs._should_skip_workout(None, None, None)
+        assert result is False
+
+    def test_should_skip_workout_before_start(self):
+        """Should skip workout before start date."""
+        workout_date = datetime(2024, 1, 1)
+        start_date = datetime(2024, 1, 15).date()
+        result = ahs._should_skip_workout(workout_date, start_date, None)
+        assert result is True
+
+    def test_should_skip_workout_after_end(self):
+        """Should skip workout after end date."""
+        workout_date = datetime(2024, 12, 31)
+        end_date = datetime(2024, 12, 15).date()
+        result = ahs._should_skip_workout(workout_date, None, end_date)
+        assert result is True
+
+    def test_should_skip_workout_within_range(self):
+        """Should not skip workout within range."""
+        workout_date = datetime(2024, 6, 15)
+        start_date = datetime(2024, 1, 1).date()
+        end_date = datetime(2024, 12, 31).date()
+        result = ahs._should_skip_workout(workout_date, start_date, end_date)
+        assert result is False
+
+    def test_finalize_results_sorting(self):
+        """Should sort and trim results correctly."""
+        best_segments = {
+            1000.0: [(120.0, None), (100.0, None), (110.0, None), (105.0, None)]
+        }
+        result = ahs._finalize_results(best_segments, top_n=2)
+        assert len(result[1000.0]) == 2
+        assert result[1000.0][0][0] == 100.0
+        assert result[1000.0][1][0] == 105.0
+
+    def test_finalize_results_empty(self):
+        """Should handle empty segments."""
+        best_segments = {1000.0: []}
+        result = ahs._finalize_results(best_segments, top_n=5)
+        assert result[1000.0] == []
+
+
+class TestCLIArgumentParsing:
+    """Test CLI argument parsing functions."""
+
+    def test_add_basic_args(self):
+        """Should add basic arguments to parser."""
+        parser = argparse.ArgumentParser()
+        ahs._add_basic_args(parser)
+        args = parser.parse_args(["--zip", "test.zip"])
+        assert args.zip == "test.zip"
+        assert args.top == 5
+        assert args.debug is False
+
+    def test_add_speed_args(self):
+        """Should add speed arguments to parser."""
+        parser = argparse.ArgumentParser()
+        ahs._add_speed_args(parser)
+        args = parser.parse_args(["--max-speed", "15.0", "--verbose"])
+        assert args.max_speed == 15.0
+        assert args.verbose is True
+
+    def test_add_filter_args(self):
+        """Should add filter arguments to parser."""
+        parser = argparse.ArgumentParser()
+        ahs._add_filter_args(parser)
+        args = parser.parse_args(["--no-progress", "--start-date", "20240101"])
+        assert args.progress is False
+        assert args.start_date == "20240101"
+
+
 
 
 if __name__ == '__main__':
