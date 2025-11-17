@@ -88,18 +88,28 @@ def _extract_gps_from_line(s: str) -> Tuple[str | None, str | None, str | None]:
     return lat, lon, ts
 
 
+def _create_gps_point(
+    lat: str | None, lon: str | None, ts: str | None
+) -> Tuple[float, float, datetime] | None:
+    """Create GPS point from string values, return None on error."""
+    if not (lat and lon and ts):
+        return None
+    try:
+        return float(lat), float(lon), parse_timestamp(ts)
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
 def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
     """Parse line-based data and yield GPS points."""
     for line in f:
         s = _decode_line(line)
         if not s or "latitude" not in s or "longitude" not in s:
             continue
-        try:
-            lat, lon, ts = _extract_gps_from_line(s)
-            if lat and lon and ts:
-                yield float(lat), float(lon), parse_timestamp(ts)
-        except (ValueError, TypeError, IndexError):
-            continue
+        lat, lon, ts = _extract_gps_from_line(s)
+        point = _create_gps_point(lat, lon, ts)
+        if point:
+            yield point
 
 
 def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, datetime]]:
