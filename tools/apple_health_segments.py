@@ -345,6 +345,77 @@ def _collect_penalty_messages(
                 penalty_messages[key] = msg
 
 
+def _load_workout_points(
+    reader: ExportReader, refs: set[str]
+) -> List[Tuple[float, float, datetime]]:
+    """Load GPS points from workout route files."""
+    points: List[Tuple[float, float, datetime]] = []
+    for ref in refs:
+        try:
+            z_path = reader.resolve_zip_path(ref)
+            if not z_path:
+                z_path = reader.resolve_zip_path(ref.lstrip("/") if ref else ref)
+                if not z_path:
+                    continue
+            with reader.zipfile.open(z_path) as rf:
+                for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
+                    points.append((lat, lon, ts))
+        except (KeyError, ET.ParseError, ValueError, TypeError):
+            continue
+    return points
+
+
+def _log_debug_segment(
+    debug: bool,
+    workout_date: datetime | None,
+    d: float,
+    duration: float,
+    debug_info: Dict[str, Any] | None,
+) -> None:
+    """Log debug information for specific segment."""
+    if not debug or not workout_date or not debug_info:
+        return
+    if not math.isclose(d, 400.0):
+        return
+    if workout_date.strftime(DATE_FMT) != "26/12/2021":
+        return
+    segment_dist = debug_info.get("segment_dist", "N/A")  # type: ignore
+    num_points = debug_info.get("num_points", "N/A")  # type: ignore
+    total_dist = debug_info.get("total_dist", "N/A")  # type: ignore
+    print(
+        f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, "
+        f"dist_covered={segment_dist:.1f}m, pts={num_points}, "
+        f"total={total_dist:.0f}m"
+    )
+
+
+def _process_distance(
+    d: float,
+    points: List[Tuple[float, float, datetime]],
+    workout_date: datetime | None,
+    best_segments: Dict[float, List[Tuple[float, datetime | None]]],
+    penalty_messages: Dict[str, str],
+    max_speed_kmh: float,
+    penalty_seconds: float,
+    debug: bool,
+    verbose: bool,
+) -> None:
+    """Process a single distance for the workout."""
+    debug_info: Dict[str, Any] | None = {} if debug or verbose else None
+    duration, s, _ = best_segment_for_dist(
+        points, d, max_speed_kmh, penalty_seconds, debug_info
+    )
+    if duration != float("inf") and s:
+        best_segments[d].append((duration, workout_date))
+        _log_debug_segment(debug, workout_date, d, duration, debug_info)
+    if (
+        verbose
+        and debug_info is not None
+        and (penalized_intervals_data := debug_info.get("penalized_intervals"))
+    ):  # type: ignore
+        _collect_penalty_messages(penalized_intervals_data, points, penalty_messages)
+
+
 def _process_workout(
     reader: ExportReader,
     workout_ref: str,
@@ -369,56 +440,24 @@ def _process_workout(
     if end_date and workout_date and workout_date.date() > end_date:
         return
 
-    points: List[Tuple[float, float, datetime]] = []
-    for ref in refs:
-        try:
-            z_path = reader.resolve_zip_path(ref)
-            if not z_path:
-                z_path = reader.resolve_zip_path(ref.lstrip("/") if ref else ref)
-                if not z_path:
-                    continue
-            with reader.zipfile.open(z_path) as rf:
-                for lat, lon, ts in stream_points_from_route(rf):  # type: ignore
-                    points.append((lat, lon, ts))
-        except (KeyError, ET.ParseError, ValueError, TypeError):
-            continue
-
+    points = _load_workout_points(reader, refs)
     if not points:
         return
 
     points.sort(key=lambda x: x[2])  # type: ignore
 
     for d in distances_m:
-        debug_info: Dict[str, Any] | None = {} if debug or verbose else None
-        duration, s, _ = best_segment_for_dist(
-            points, d, max_speed_kmh, penalty_seconds, debug_info
+        _process_distance(
+            d,
+            points,
+            workout_date,
+            best_segments,
+            penalty_messages,
+            max_speed_kmh,
+            penalty_seconds,
+            debug,
+            verbose,
         )
-        if duration != float("inf") and s:
-            best_segments[d].append((duration, workout_date))
-            if (
-                debug
-                and workout_date
-                and s
-                and math.isclose(d, 400.0)
-                and debug_info is not None
-                and workout_date.strftime(DATE_FMT) == "26/12/2021"
-            ):
-                segment_dist = debug_info.get("segment_dist", "N/A")  # type: ignore
-                num_points = debug_info.get("num_points", "N/A")  # type: ignore
-                total_dist = debug_info.get("total_dist", "N/A")  # type: ignore
-                print(
-                    f"DEBUG [26/12/2021, 400m]: duration={duration:.2f}s, "
-                    f"dist_covered={segment_dist:.1f}m, pts={num_points}, "
-                    f"total={total_dist:.0f}m"
-                )
-        if (
-            verbose
-            and debug_info is not None
-            and (penalized_intervals_data := debug_info.get("penalized_intervals"))
-        ):  # type: ignore
-            _collect_penalty_messages(
-                penalized_intervals_data, points, penalty_messages
-            )
 
 
 def process_export(
