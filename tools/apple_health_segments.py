@@ -206,6 +206,78 @@ def _collect_debug_penalties(
     return penalized_in_segment
 
 
+def _find_best_segment(
+    n: int,
+    cum: List[float],
+    cum_adj_time: List[float],
+    target_m: float,
+    points: List[Tuple[float, float, datetime]],
+    adj_time_deltas: List[float],
+    time_deltas: List[float],
+    dist_between: List[float],
+    debug_info: dict[str, Any] | None,
+) -> Tuple[
+    Tuple[float, datetime | None, datetime | None],
+    int,
+    int,
+    List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]],
+]:
+    """Find best segment using sliding window."""
+    best = (float("inf"), None, None)
+    best_i = best_j = -1
+    penalized_intervals: List[
+        Tuple[int, int, List[Tuple[int, int, float, float, float]]]
+    ] = []
+
+    j = 0
+    for i in range(n):
+        j = max(j, i + 1)
+        while j < n and (cum[j] - cum[i]) < target_m:
+            j += 1
+        if j >= n:
+            break
+
+        duration = cum_adj_time[j] - cum_adj_time[i]
+        if debug_info is not None:
+            penalties = _collect_debug_penalties(
+                i, j, adj_time_deltas, time_deltas, dist_between
+            )
+            if penalties:
+                penalized_intervals.append((i, j, penalties))
+
+        if duration >= 0 and duration < best[0]:
+            best = (duration, points[i][2], points[j][2])
+            best_i = i
+            best_j = j
+
+    return best, best_i, best_j, penalized_intervals
+
+
+def _update_debug_info(
+    debug_info: dict[str, Any],
+    best_i: int,
+    best_j: int,
+    cum: List[float],
+    n: int,
+    penalized_intervals: List[Tuple[int, int, List[Tuple[int, int, float, float, float]]]],
+) -> None:
+    """Update debug info with segment details."""
+    if best_i < 0 or best_j < 0:
+        return
+    debug_info.update(
+        {
+            "best_i": best_i,
+            "best_j": best_j,
+            "start_cum_dist": cum[best_i],
+            "end_cum_dist": cum[best_j],
+            "segment_dist": cum[best_j] - cum[best_i],
+            "num_points": n,
+            "total_dist": cum[-1] if n > 0 else 0,
+            "penalized_intervals": penalized_intervals,
+        }
+    )
+
+
 def best_segment_for_dist(
     points: List[Tuple[float, float, datetime]],
     target_m: float,
@@ -229,47 +301,20 @@ def best_segment_for_dist(
     for i in range(1, n):
         cum_adj_time[i] = cum_adj_time[i - 1] + adj_time_deltas[i]
 
-    best = (float("inf"), None, None)
-    best_i = best_j = -1
-    penalized_intervals: List[
-        Tuple[int, int, List[Tuple[int, int, float, float, float]]]
-    ] = []
+    best, best_i, best_j, penalized_intervals = _find_best_segment(
+        n,
+        cum,
+        cum_adj_time,
+        target_m,
+        points,
+        adj_time_deltas,
+        time_deltas,
+        dist_between,
+        debug_info,
+    )
 
-    j = 0
-    for i in range(n):
-        if j <= i:
-            j = i + 1
-        while j < n and (cum[j] - cum[i]) < target_m:
-            j += 1
-        if j >= n:
-            break
-
-        duration = cum_adj_time[j] - cum_adj_time[i]
-        if debug_info is not None:
-            penalties = _collect_debug_penalties(
-                i, j, adj_time_deltas, time_deltas, dist_between
-            )
-            if penalties:
-                penalized_intervals.append((i, j, penalties))
-
-        if duration >= 0 and duration < best[0]:
-            best = (duration, points[i][2], points[j][2])
-            best_i = i
-            best_j = j
-
-    if debug_info is not None and best_i >= 0 and best_j >= 0:
-        debug_info.update(
-            {
-                "best_i": best_i,
-                "best_j": best_j,
-                "start_cum_dist": cum[best_i],
-                "end_cum_dist": cum[best_j],
-                "segment_dist": cum[best_j] - cum[best_i],
-                "num_points": n,
-                "total_dist": cum[-1] if n > 0 else 0,
-                "penalized_intervals": penalized_intervals,
-            }
-        )
+    if debug_info is not None:
+        _update_debug_info(debug_info, best_i, best_j, cum, n, penalized_intervals)
 
     return best
 
