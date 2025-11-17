@@ -178,7 +178,7 @@ class TestStreamPointsFromRoute:
         points = list(ahs.stream_points_from_route(bio))  # type: ignore
 
         assert len(points) == 2  # type: ignore
-        lat1, lon1, ele1, ts1 = points[0]  # type: ignore
+        lat1, lon1, _, ts1 = points[0]  # type: ignore
         assert abs(lat1 - 0.0) < 1e-6  # type: ignore
         assert abs(lon1 - 0.0) < 1e-6  # type: ignore
         assert isinstance(ts1, datetime)

@@ -439,6 +439,24 @@ def _format_penalty_lines(penalty_messages: Dict[str, str]) -> List[str]:
     return lines
 
 
+def _format_date_string(workout_dt: datetime | None) -> str:
+    """Format workout date as string."""
+    if not workout_dt:
+        return "unknown"
+    try:
+        return workout_dt.strftime("%d/%m/%Y")
+    except (AttributeError, ValueError):
+        return workout_dt.isoformat()
+
+
+def _format_segment_line(idx: int, duration: float, workout_dt: datetime | None, elevation_change: float, avg_speed: float) -> str:
+    """Format a single segment result line."""
+    date_str = _format_date_string(workout_dt)
+    ele_str = f"{elevation_change:+.0f}m" if elevation_change != 0 else "0m"
+    pace_str = format_pace(avg_speed)
+    return f"  {idx:2d}. {date_str}  {format_duration(duration)}  {ele_str}  {pace_str}"
+
+
 def _format_results_lines(
     results: Dict[float, List[Tuple[float, datetime | None, float, float]]],
 ) -> List[str]:
@@ -451,16 +469,7 @@ def _format_results_lines(
             lines.append("  No segments found")
             continue
         for idx, (duration, workout_dt, elevation_change, avg_speed) in enumerate(rows, start=1):
-            if workout_dt:
-                try:
-                    date_str = workout_dt.strftime("%d/%m/%Y")
-                except (AttributeError, ValueError):
-                    date_str = workout_dt.isoformat()
-            else:
-                date_str = "unknown"
-            ele_str = f"{elevation_change:+.0f}m" if elevation_change != 0 else "0m"
-            pace_str = format_pace(avg_speed)
-            lines.append(f"  {idx:2d}. {date_str}  {format_duration(duration)}  {ele_str}  {pace_str}")
+            lines.append(_format_segment_line(idx, duration, workout_dt, elevation_change, avg_speed))
     return lines
 
 
