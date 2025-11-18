@@ -21,6 +21,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
    - Update comparison links at bottom of file
 
 2. Create and push a version tag:
+
    ```bash
    git tag -a vX.Y.Z -m "Release version X.Y.Z"
    git push origin vX.Y.Z
@@ -40,6 +41,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
 ## [Unreleased]
 
 ### Added
+
 - Initial release of Apple Health Segments tool
 - Core CLI tool (`apple_health_segments.py`) for finding fastest running segments from Apple Health exports
 - Penalty-based GPS error handling system
@@ -61,6 +63,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
   - `segment_analysis.py` - Segment analysis core library
 
 ### Features
+
 - Two-pointer sliding window algorithm for segment detection
 - Haversine formula for distance calculations (±0.1% precision)
 - Support for Apple Health Route XML and GPX file formats
@@ -69,6 +72,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
 - Streams exports without loading entire dataset into RAM
 
 ### Testing
+
 - Comprehensive test suite with 13 test modules
 - 1,564+ lines of test code covering:
   - CLI argument parsing
@@ -89,6 +93,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
   - Dependabot configuration
 
 ### Documentation
+
 - Comprehensive README.md with quick start guide
 - Detailed tools/README.md with CLI reference and algorithm explanation
 - Test documentation in tests/README.md
@@ -97,6 +102,7 @@ This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
 - Codacy configuration for code quality monitoring
 
 ### Development
+
 - Python 3.x compatible
 - Dependencies: `python-dateutil`, `tqdm`, `pytest`, `pytest-cov`
 - Codacy quality monitoring

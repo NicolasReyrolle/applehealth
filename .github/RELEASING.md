@@ -28,17 +28,20 @@ This project uses [Semantic Versioning](https://semver.org/):
 ### Using the Helper Script
 
 1. Ensure you're on the `main` branch and up-to-date:
+
    ```bash
    git checkout main
    git pull origin main
    ```
 
 2. Run the release preparation script:
+
    ```bash
    .github/scripts/prepare-release.sh 1.0.0
    ```
 
 3. The script will:
+
    - Validate the version format
    - Update CHANGELOG.md with the new version
    - Run tests to ensure everything passes
@@ -47,17 +50,20 @@ This project uses [Semantic Versioning](https://semver.org/):
    - Provide instructions for pushing
 
 4. Review the changes:
+
    ```bash
    git show HEAD
    ```
 
 5. Push the commit and tag:
+
    ```bash
    git push origin main
    git push origin v1.0.0
    ```
 
 6. GitHub Actions will automatically:
+
    - Run all tests and quality checks
    - Extract changelog notes for the version
    - Create a GitHub Release
@@ -72,11 +78,14 @@ If you prefer to do the release manually:
 
 1. Open `CHANGELOG.md`
 2. Create a new version section:
+
    ```markdown
    ## [1.0.0] - 2025-11-18
    ```
+
 3. Move relevant items from `[Unreleased]` to the new version section
 4. Update the comparison links at the bottom:
+
    ```markdown
    [Unreleased]: https://github.com/NicolasReyrolle/applehealth/compare/v1.0.0...HEAD
    [1.0.0]: https://github.com/NicolasReyrolle/applehealth/compare/v0.0.0...v1.0.0
@@ -113,6 +122,7 @@ Visit the [Actions tab](https://github.com/NicolasReyrolle/applehealth/actions) 
 The GitHub Actions workflow (`.github/workflows/release.yml`) performs:
 
 ### Validation Phase
+
 - Checks out the code
 - Sets up Python environment
 - Installs dependencies
@@ -121,6 +131,7 @@ The GitHub Actions workflow (`.github/workflows/release.yml`) performs:
 - Verifies CHANGELOG.md contains the version
 
 ### Release Phase
+
 - Extracts version from tag
 - Parses changelog notes for the release
 - Creates GitHub Release (draft for pre-releases)
@@ -156,16 +167,19 @@ After a release is published:
 ### Release Workflow Failed
 
 **Tests Failed:**
+
 - Fix the failing tests
 - Delete the tag: `git tag -d v1.0.0 && git push origin :v1.0.0`
 - Fix issues and create tag again
 
 **CHANGELOG Validation Failed:**
+
 - Ensure CHANGELOG.md contains `## [X.Y.Z]` section
 - Update CHANGELOG.md
 - Force push the tag: `git tag -f v1.0.0 && git push -f origin v1.0.0`
 
 **Build Failed:**
+
 - Check the build logs in GitHub Actions
 - Verify setup.py is valid
 - Ensure all dependencies are correctly specified
