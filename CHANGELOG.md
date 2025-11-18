@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Version Tagging Strategy
+
+This project uses **Semantic Versioning** (MAJOR.MINOR.PATCH):
+
+- **MAJOR** version (x.0.0): Incompatible API changes or breaking CLI changes
+- **MINOR** version (0.x.0): New features in a backwards-compatible manner
+- **PATCH** version (0.0.x): Backwards-compatible bug fixes
+
+### Release Process
+
+1. Update CHANGELOG.md:
+   - Move items from `[Unreleased]` to a new version section
+   - Add release date in format `## [X.Y.Z] - YYYY-MM-DD`
+   - Update comparison links at bottom of file
+
+2. Create and push a version tag:
+   ```bash
+   git tag -a vX.Y.Z -m "Release version X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+3. GitHub Actions will automatically:
+   - Run tests and quality checks
+   - Create a GitHub Release with changelog notes
+   - Build and publish artifacts (if configured)
+
+### Tag Format
+
+- Tags follow the format `vX.Y.Z` (e.g., `v1.0.0`, `v1.2.3`)
+- Pre-releases use suffix: `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`
+- Development builds: `vX.Y.Z-dev.N`
+
 ## [Unreleased]
 
 ### Added

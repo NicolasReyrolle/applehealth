@@ -29,7 +29,6 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
 ### Testing
 
 - **[TESTING.md](TESTING.md)** - How to run tests
-
   - Test commands
   - Coverage reports
   - Test structure overview
@@ -38,6 +37,14 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
   - 44 tests covering all major functionality
   - 64% code coverage of main tool
   - Test design and organization
+
+### Development
+
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
+- **[.github/RELEASING.md](.github/RELEASING.md)** - Release process guide
+  - Semantic versioning strategy
+  - Automated and manual release procedures
+  - Troubleshooting guide
 
 ## Features
 
@@ -200,8 +207,17 @@ Key parameters:
 
 For personal use. See repository for details.
 
+## Contributing
+
+For maintainers creating releases:
+
+1. See [.github/RELEASING.md](.github/RELEASING.md) for the release process
+2. Review [CHANGELOG.md](CHANGELOG.md) for version history
+3. Use `.github/scripts/prepare-release.sh` for automated releases
+
 ## Support
 
 - Check [tools/README.md](tools/README.md) for usage details
 - See [TESTING.md](TESTING.md) for running tests
 - Review [TEST_SUMMARY.md](TEST_SUMMARY.md) for test coverage info
+- View [CHANGELOG.md](CHANGELOG.md) for version history
