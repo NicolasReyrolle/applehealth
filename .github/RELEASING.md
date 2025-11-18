@@ -99,7 +99,7 @@ git commit -m "Prepare release 1.0.0
 
 Update CHANGELOG.md for version 1.0.0
 
-Co-authored-by: nicolas-reyrolle <n.reyrolle@gmail.com>"
+Co-authored-by: nicolas-reyrolle <405928+NicolasReyrolle@users.noreply.github.com>"
 ```
 
 ### Step 3: Create and Push Tag

@@ -103,7 +103,7 @@ git commit -m "Prepare release $VERSION
 
 Update CHANGELOG.md for version $VERSION
 
-Co-authored-by: nicolas-reyrolle <n.reyrolle@gmail.com>"
+Co-authored-by: nicolas-reyrolle <405928+NicolasReyrolle@users.noreply.github.com>"
 
 echo ""
 echo "Step 4: Creating and pushing tag..."

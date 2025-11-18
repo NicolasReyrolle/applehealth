@@ -100,7 +100,7 @@ jobs:
           cat release_notes.md
       
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.4.2
         with:
           name: Release ${{ steps.get_version.outputs.tag }}
           body_path: release_notes.md
@@ -133,7 +133,7 @@ jobs:
               name="apple-health-segments",
               version="${{ steps.get_version.outputs.version }}",
               author="Nicolas Reyrolle",
-              author_email="n.reyrolle@gmail.com",
+              author_email="405928+NicolasReyrolle@users.noreply.github.com",
               description="Find your fastest running segments from Apple Health exports",
               long_description=long_description,
               long_description_content_type="text/markdown",
