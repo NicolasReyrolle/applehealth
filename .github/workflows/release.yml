@@ -165,7 +165,7 @@ jobs:
           python setup.py sdist bdist_wheel
       
       - name: Upload release artifacts
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.4.2
         with:
           files: |
             dist/*.tar.gz
