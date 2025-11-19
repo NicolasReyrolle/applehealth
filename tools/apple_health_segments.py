@@ -179,7 +179,8 @@ def _get_progress_iterable(iterable: Any, progress: bool, debug: bool) -> Any:
 
 
 def _finalize_results(
-    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]], top_n: int
+    best_segments: Dict[float, List[Tuple[float, datetime | None, float, float]]],
+    top_n: int,
 ) -> Dict[float, List[Tuple[float, datetime | None, float, float]]]:
     """Sort and trim results to top N."""
     results: Dict[float, List[Tuple[float, datetime | None, float, float]]] = {}
@@ -239,7 +240,9 @@ def process_export(
     distances_m: Iterable[float],
     top_n: int = 5,
     config: Dict[str, Any] | None = None,
-) -> Tuple[Dict[float, List[Tuple[float, datetime | None, float, float]]], Dict[str, str]]:
+) -> Tuple[
+    Dict[float, List[Tuple[float, datetime | None, float, float]]], Dict[str, str]
+]:
     """Process Apple Health export to find fastest running segments.
 
     Returns tuple of (results_dict, penalty_messages_dict).
@@ -449,7 +452,13 @@ def _format_date_string(workout_dt: datetime | None) -> str:
         return workout_dt.isoformat()
 
 
-def _format_segment_line(idx: int, duration: float, workout_dt: datetime | None, elevation_change: float, avg_speed: float) -> str:
+def _format_segment_line(
+    idx: int,
+    duration: float,
+    workout_dt: datetime | None,
+    elevation_change: float,
+    avg_speed: float,
+) -> str:
     """Format a single segment result line."""
     date_str = _format_date_string(workout_dt)
     ele_str = f"{elevation_change:+.0f}m" if elevation_change != 0 else "0m"
@@ -468,8 +477,14 @@ def _format_results_lines(
         if not rows:
             lines.append("  No segments found")
             continue
-        for idx, (duration, workout_dt, elevation_change, avg_speed) in enumerate(rows, start=1):
-            lines.append(_format_segment_line(idx, duration, workout_dt, elevation_change, avg_speed))
+        for idx, (duration, workout_dt, elevation_change, avg_speed) in enumerate(
+            rows, start=1
+        ):
+            lines.append(
+                _format_segment_line(
+                    idx, duration, workout_dt, elevation_change, avg_speed
+                )
+            )
     return lines
 
 
