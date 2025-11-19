@@ -5,7 +5,7 @@ It uses multiple strategies:
 
 1. **Linear Regression Trend** - Fits a line through recent times to predict improvement trajectory
 2. **Weighted Recent Average** - Gives more weight to recent workouts (exponential decay)
-3. **Speed-based Prediction** - Projects distance time using average sustained speed from 
+3. **Speed-based Prediction** - Projects distance time using average sustained speed from
 recent runs
 4. **Conservative Estimate** - Uses percentiles to predict achievable optimal time
 """
@@ -54,9 +54,11 @@ def _time_since_days(
         return float("inf")
 
 
-def _compute_linear_regression(x_vals: List[float], y_vals: List[float]) -> Tuple[float, float]:
+def _compute_linear_regression(
+    x_vals: List[float], y_vals: List[float]
+) -> Tuple[float, float]:
     """Compute linear regression slope and intercept.
-    
+
     Returns:
         Tuple of (slope, intercept)
     """
@@ -74,7 +76,7 @@ def _compute_linear_regression(x_vals: List[float], y_vals: List[float]) -> Tupl
 
 def _extrapolate_trend(slope: float, intercept: float, min_observed: float) -> float:
     """Extrapolate trend to ideal conditions.
-    
+
     Returns estimated time if improving trend, otherwise min observed time.
     """
     if slope < 0:
@@ -196,7 +198,7 @@ def _calculate_speed_and_weight(
     t: float, d: float, dt: datetime | None, decay_half_life_days: float
 ) -> Tuple[float, float] | None:
     """Calculate speed and weight for a single workout.
-    
+
     Returns (speed_kmh, weight) or None if invalid.
     """
     pace_kmh = _calculate_pace_kmh(t, d)
@@ -207,11 +209,9 @@ def _calculate_speed_and_weight(
     return pace_kmh, weight
 
 
-def _compute_weighted_speed(
-    speeds: List[float], weights: List[float]
-) -> float:
+def _compute_weighted_speed(speeds: List[float], weights: List[float]) -> float:
     """Compute weighted average speed.
-    
+
     Returns average speed or 0 if no valid weights.
     """
     total_weight = sum(weights)
@@ -268,7 +268,11 @@ def estimate_speed_based(
     if not speeds or sum(weights) == 0:
         return float("inf")
     avg_speed = _compute_weighted_speed(speeds, weights)
-    return _calculate_duration_from_pace(target_distance, avg_speed) if avg_speed > 0 else float("inf")
+    return (
+        _calculate_duration_from_pace(target_distance, avg_speed)
+        if avg_speed > 0
+        else float("inf")
+    )
 
 
 def estimate_percentile_based(
@@ -404,7 +408,7 @@ def estimate_optimal_time(
 
 def _get_improvement_level(improvement_percent: float) -> str | None:
     """Get improvement level string based on percentage.
-    
+
     Returns confidence string or None if strong improvement category.
     """
     if improvement_percent <= 1.0:
@@ -435,7 +439,11 @@ def format_estimation_confidence(
     if level is not None:
         return level
 
-    delta = best_observed_time - estimated_time if best_observed_time and estimated_time else 0.0
+    delta = (
+        best_observed_time - estimated_time
+        if best_observed_time and estimated_time
+        else 0.0
+    )
     if best_observed_time and delta / best_observed_time > 0.10:
         return "(strong improvement — optimistic)"
     return "(strong upward trend)"
