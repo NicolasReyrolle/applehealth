@@ -14,6 +14,7 @@ This tool scans your Apple Health `export.zip` and identifies the top-N fastest 
 - ✅ File output (save results and penalty warnings to text files)
 - ✅ Memory-efficient streaming (processes large exports without loading into RAM)
 - ✅ GPS format support: Apple Health XML Routes and GPX files
+- ✅ **Performance trend estimation** (predict optimal times based on recent workouts)
 
 ## Installation
 
@@ -59,6 +60,8 @@ python .\tools\apple_health_segments.py --zip "path\to\export.zip" --start-date 
 --start-date YYYYMMDD          Start of date range (inclusive)
 --end-date YYYYMMDD            End of date range (inclusive)
 --progress / --no-progress      Show/hide progress bar (default: enabled)
+--show-estimation /             Show/hide estimated optimal time based on recent
+--no-estimation                 performance trends (default: enabled)
 --debug                         Show debug information
 ```
 
@@ -111,6 +114,62 @@ Without correction, these create unrealistic speeds (e.g., 100+ km/h on a run).
 - How much to demote a segment with anomalies
 - 3 seconds ≈ 0.5m at race pace (minimal impact on ranking)
 - Increase if you want to ignore segments with any GPS errors
+
+## Performance Trend Estimation
+
+The tool can predict your **optimal achievable time** for each distance based on recent workout performance. This uses an ensemble of estimation methods to give you a realistic target based on your actual running patterns.
+
+### Estimation Strategy
+
+The estimation analyzes your fastest recent times and extrapolates using three strategies:
+
+1. **Percentile-based** (50th percentile) - Uses your median recent performance
+2. **Weighted recent average** - Emphasizes more recent workouts (exponential decay over 30 days)
+3. **Speed-based projection** - Extrapolates your average recent pace to the target distance
+
+The final estimate is the **average of these three methods**, giving a balanced prediction that accounts for:
+
+- Recent training progress and trends
+- Variable performance across different conditions
+- Realistic expectations vs. one-off great days
+
+### Example Output
+
+```text
+Distance: 5 km
+  Estimated optimal:  00:25:15  (steady improvement)
+    1. 08/08/2024  00:25:30
+    2. 24/04/2025  00:25:45
+    3. 30/03/2025  00:26:02
+```
+
+The "Estimated optimal" line shows:
+
+- **Time**: Predicted best time you could achieve based on recent form
+- **Confidence**: How strong the trend is
+  - "flat/recovery trend" - No improvement visible (relax, it's normal)
+  - "modest improvement" - Slight positive trend
+  - "steady improvement" - Consistent gains (training is working!)
+  - "strong upward trend" - Major improvements (excellent progress)
+
+### Disabling Estimation
+
+If you prefer to see just the actual segments without predictions:
+
+```powershell
+python .\tools\apple_health_segments.py --zip "export.zip" --no-estimation
+```
+
+### Quality of Estimation
+
+The estimation is most accurate when you have:
+
+- **At least 5-10 recent runs** of the same distance
+- **Consistent training** (not long breaks)
+- **Recent data** (within 1-3 months)
+- **Minimal GPS errors** (results already filtered by the penalty system)
+
+With fewer runs or inconsistent data, the tool may show "unable to estimate" – that's normal and doesn't affect the actual segment rankings.
 
 ## Output Format
 

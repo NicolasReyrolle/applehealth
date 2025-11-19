@@ -27,6 +27,7 @@ from export_processor import (
     stream_points_from_route,
 )
 from segment_analysis import best_segment_for_dist, collect_penalty_messages
+from time_estimation import estimate_optimal_time, format_estimation_confidence
 
 try:
     from tqdm import tqdm
@@ -401,6 +402,19 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--end-date", help="End date filter (YYYYMMDD format, inclusive)"
     )
+    parser.add_argument(
+        "--show-estimation",
+        dest="show_estimation",
+        action="store_true",
+        default=True,
+        help="Show estimated optimal time based on recent performance trends (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-estimation",
+        dest="show_estimation",
+        action="store_false",
+        help="Disable estimated optimal time display",
+    )
     parser.set_defaults(progress=True)
 
 
@@ -468,6 +482,7 @@ def _format_segment_line(
 
 def _format_results_lines(
     results: Dict[float, List[Tuple[float, datetime | None, float, float]]],
+    show_estimation: bool = True,
 ) -> List[str]:
     """Format results for output."""
     lines: List[str] = []
@@ -477,6 +492,24 @@ def _format_results_lines(
         if not rows:
             lines.append("  No segments found")
             continue
+
+        # Show estimated optimal time if requested and we have enough data
+        if show_estimation and len(rows) >= 2:
+            estimated = estimate_optimal_time(rows, d, strategy="ensemble")
+            if estimated is not None:
+                improvement_pct = (
+                    ((rows[0][0] - estimated) / rows[0][0]) * 100.0
+                    if rows[0][0] > 0
+                    else 0.0
+                )
+                confidence = format_estimation_confidence(
+                    estimated, rows[0][0], improvement_pct
+                )
+                lines.append(
+                    f"  Estimated optimal:  {format_duration(estimated)}  {confidence}"
+                )
+                lines.append("")
+
         for idx, (duration, workout_dt, elevation_change, avg_speed) in enumerate(
             rows, start=1
         ):
@@ -522,7 +555,7 @@ def main():
     )
 
     penalty_lines = _format_penalty_lines(penalty_messages)
-    out_lines = _format_results_lines(results)
+    out_lines = _format_results_lines(results, show_estimation=args.show_estimation)
 
     for line in penalty_lines:
         print(line)

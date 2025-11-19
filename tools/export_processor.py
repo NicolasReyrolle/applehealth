@@ -1,4 +1,5 @@
 """Export processor for Apple Health data."""
+
 from __future__ import annotations
 
 import re
@@ -21,7 +22,9 @@ def parse_timestamp(s: str) -> datetime:
     return dateutil_parser.parse(s)
 
 
-def _get_location_attrs(elem: Any) -> Tuple[str | None, str | None, str | None, str | None]:
+def _get_location_attrs(
+    elem: Any,
+) -> Tuple[str | None, str | None, str | None, str | None]:
     """Extract lat, lon, elevation, and timestamp attributes from element."""
     lat = elem.get("latitude") or elem.get("lat")
     lon = elem.get("longitude") or elem.get("lon")
@@ -73,7 +76,9 @@ def _parse_xml_data(bio: BinaryIO) -> Iterable[Tuple[float, float, float, dateti
         elif tag in ("ele", "elevation") and elem.text:
             current_trkpt_data["ele"] = elem.text
         elif tag in ("trkpt", "trkPoint"):
-            point = _parse_trkpt_with_time(elem, current_trkpt_data.get("time"), current_trkpt_data.get("ele"))
+            point = _parse_trkpt_with_time(
+                elem, current_trkpt_data.get("time"), current_trkpt_data.get("ele")
+            )
             if point:
                 yield point
             current_trkpt_data.clear()
@@ -88,7 +93,9 @@ def _decode_line(line: bytes | bytearray | str) -> str | None:
         return None
 
 
-def _extract_gps_from_line(s: str) -> Tuple[str | None, str | None, str | None, str | None]:
+def _extract_gps_from_line(
+    s: str,
+) -> Tuple[str | None, str | None, str | None, str | None]:
     """Extract lat, lon, elevation, timestamp from line string."""
     parts = s.replace('"', "").replace("'", "").split()
     lat = next((p.split("=")[1] for p in parts if p.startswith("latitude")), None)
@@ -123,7 +130,9 @@ def _parse_line_data(f: BinaryIO) -> Iterable[Tuple[float, float, float, datetim
             yield point
 
 
-def stream_points_from_route(f: BinaryIO) -> Iterable[Tuple[float, float, float, datetime]]:
+def stream_points_from_route(
+    f: BinaryIO,
+) -> Iterable[Tuple[float, float, float, datetime]]:
     """Yield (lat, lon, elevation, timestamp) tuples from a route file-like object.
 
     Supports Apple Health `Route` XML with `Location` tags or GPX `trkpt` entries.
@@ -160,14 +169,20 @@ class ExportReader:
         names = self.zipfile.namelist()
         for n in names:
             ln = n.lower()
-            if ln.endswith("export.xml") or ln.endswith("export_cda.xml") or "/export.xml" in ln:
+            if (
+                ln.endswith("export.xml")
+                or ln.endswith("export_cda.xml")
+                or "/export.xml" in ln
+            ):
                 return n
         for n in names:
             if n.lower().endswith(".xml") and "export" in n.lower():
                 return n
         raise FileNotFoundError("Could not find export XML inside the zip")
 
-    def _parse_workout_times(self, elem: Any) -> Tuple[datetime | None, datetime | None]:
+    def _parse_workout_times(
+        self, elem: Any
+    ) -> Tuple[datetime | None, datetime | None]:
         """Extract start and end times from workout element."""
         start = elem.get("startDate") or elem.get("creationDate") or elem.get("start")
         end = elem.get("endDate") or elem.get("end")
@@ -181,18 +196,23 @@ class ExportReader:
             edt = None
         return sdt, edt
 
-    def collect_running_workouts(self, xml_name: str) -> Dict[str, Dict[str, datetime | None]]:
+    def collect_running_workouts(
+        self, xml_name: str
+    ) -> Dict[str, Dict[str, datetime | None]]:
         """Parse running workouts from export XML."""
         workouts: Dict[str, Dict[str, datetime | None]] = {}
         with self.zipfile.open(xml_name) as ef:
             it = iterparse(ef, events=("end",))
             idx = 0
             for _, elem in it:
-                if elem.tag.split("}")[-1] == "Workout":
-                    if elem.get("workoutActivityType") == "HKWorkoutActivityTypeRunning":
-                        sdt, edt = self._parse_workout_times(elem)
-                        workouts[f"wk_{idx}"] = {"start": sdt, "end": edt}
-                        idx += 1
+                if (
+                    elem.tag.split("}")[-1] == "Workout"
+                    and elem.get("workoutActivityType")
+                    == "HKWorkoutActivityTypeRunning"
+                ):
+                    sdt, edt = self._parse_workout_times(elem)
+                    workouts[f"wk_{idx}"] = {"start": sdt, "end": edt}
+                    idx += 1
                 elem.clear()
         return workouts
 
@@ -240,6 +260,7 @@ class ExportReader:
         self, opening: str, body: str
     ) -> Tuple[datetime | None, datetime | None, List[str]] | None:
         """Parse a single route from text match."""
+
         def find_attr(s: str, name: str) -> str | None:
             p = re.search(rf'{name}="([^"]+)"', s)
             return p.group(1) if p else None
@@ -288,10 +309,12 @@ class ExportReader:
         ]
         if not ref_path.startswith("apple_health_export"):
             p = ref_path.lstrip("/")
-            candidates.extend([
-                "apple_health_export/" + p,
-                "apple_health_export" + ref_path,
-            ])
+            candidates.extend(
+                [
+                    "apple_health_export/" + p,
+                    "apple_health_export" + ref_path,
+                ]
+            )
         for c in candidates:
             if c in self.zipfile.namelist():
                 return c
@@ -333,7 +356,5 @@ def match_routes_to_workouts(
     """Match route files to workouts by time overlap."""
     workout_to_files: defaultdict[str, set[str]] = defaultdict(set)
     for rstart, rend, paths in routes:
-        _add_route_to_matching_workouts(
-            rstart, rend, paths, workouts, workout_to_files
-        )
+        _add_route_to_matching_workouts(rstart, rend, paths, workouts, workout_to_files)
     return workout_to_files
