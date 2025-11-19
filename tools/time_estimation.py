@@ -54,6 +54,35 @@ def _time_since_days(
         return float("inf")
 
 
+def _compute_linear_regression(x_vals: List[float], y_vals: List[float]) -> Tuple[float, float]:
+    """Compute linear regression slope and intercept.
+    
+    Returns:
+        Tuple of (slope, intercept)
+    """
+    n = len(x_vals)
+    x_mean = sum(x_vals) / n
+    y_mean = sum(y_vals) / n
+    numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_vals, y_vals))
+    denominator = sum((x - x_mean) ** 2 for x in x_vals)
+    if denominator == 0:
+        return 0.0, y_mean
+    slope = numerator / denominator
+    intercept = y_mean - slope * x_mean
+    return slope, intercept
+
+
+def _extrapolate_trend(slope: float, intercept: float, min_observed: float) -> float:
+    """Extrapolate trend to ideal conditions.
+    
+    Returns estimated time if improving trend, otherwise min observed time.
+    """
+    if slope < 0:
+        optimal = intercept
+        return max(min_observed * 0.90, min(optimal, min_observed))
+    return min_observed
+
+
 def estimate_trend_linear(
     times: List[float],
     dates: List[datetime | None],
@@ -62,8 +91,7 @@ def estimate_trend_linear(
     """Estimate optimal time using linear regression of recent trend.
 
     Returns projected best time by fitting a line through recent times and
-    extrapolating to time zero (perfect conditions). Ignores outliers beyond
-    2 std deviations.
+    extrapolating to time zero (perfect conditions).
 
     Args:
         times: List of segment durations in seconds (must be sorted fastest first)
@@ -73,17 +101,14 @@ def estimate_trend_linear(
     Returns:
         Estimated optimal time in seconds, or inf if insufficient data
     """
-    # `_target_distance` kept for API compatibility; not used in this estimator
     del _target_distance
     if len(times) < 3:
         return float("inf")
 
-    # Use top 3-5 fastest times for regression
     count = min(5, len(times))
     recent_times = times[:count]
     recent_dates = dates[:count]
 
-    # Filter out None dates
     valid_pairs: List[Tuple[float, datetime]] = [
         (t, d) for t, d in zip(recent_times, recent_dates) if d is not None
     ]
@@ -91,36 +116,15 @@ def estimate_trend_linear(
     if len(valid_pairs) < 3:
         return float("inf")
 
-    # Pair times with days-ago
     x_vals = [_time_since_days(d) for _, d in valid_pairs]
     y_vals = [t for t, _ in valid_pairs]
 
     if not x_vals or not y_vals or any(math.isinf(x) for x in x_vals):
         return float("inf")
 
-    # Linear regression: y = mx + b
-    n = len(x_vals)
-    x_mean = sum(x_vals) / n
-    y_mean = sum(y_vals) / n
-
-    numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_vals, y_vals))
-    denominator = sum((x - x_mean) ** 2 for x in x_vals)
-
-    if denominator == 0:
-        return min(recent_times)
-
-    slope = numerator / denominator
-    intercept = y_mean - slope * x_mean
-
-    # Extrapolate to time zero (ideal conditions), but cap at minimum observed
-    # Use only if slope is negative (improving trend)
-    if slope < 0:
-        optimal = intercept
-        min_observed = min(recent_times)
-        # Conservative: use max of (extrapolated, 90% of best time)
-        return max(min_observed * 0.90, min(optimal, min_observed))
-
-    return min(recent_times)
+    slope, intercept = _compute_linear_regression(x_vals, y_vals)
+    min_observed = min(recent_times)
+    return _extrapolate_trend(slope, intercept, min_observed)
 
 
 def estimate_weighted_recent(
@@ -181,6 +185,41 @@ def estimate_weighted_recent(
     return weighted_avg
 
 
+def _prepare_distance_list(distances: List[float], required_count: int) -> List[float]:
+    """Prepare distance list by padding with last value if necessary."""
+    if len(distances) >= required_count:
+        return distances[:required_count]
+    return distances + [distances[-1]] * (required_count - len(distances))
+
+
+def _calculate_speed_and_weight(
+    t: float, d: float, dt: datetime | None, decay_half_life_days: float
+) -> Tuple[float, float] | None:
+    """Calculate speed and weight for a single workout.
+    
+    Returns (speed_kmh, weight) or None if invalid.
+    """
+    pace_kmh = _calculate_pace_kmh(t, d)
+    if pace_kmh <= 0:
+        return None
+    days_ago = _time_since_days(dt)
+    weight = 0.0 if math.isinf(days_ago) else 2.0 ** (-days_ago / decay_half_life_days)
+    return pace_kmh, weight
+
+
+def _compute_weighted_speed(
+    speeds: List[float], weights: List[float]
+) -> float:
+    """Compute weighted average speed.
+    
+    Returns average speed or 0 if no valid weights.
+    """
+    total_weight = sum(weights)
+    if total_weight == 0:
+        return 0.0
+    return sum(s * w for s, w in zip(speeds, weights)) / total_weight
+
+
 def estimate_speed_based(
     times: List[float],
     distances: List[float],
@@ -191,7 +230,7 @@ def estimate_speed_based(
     """Estimate time using weighted average speed from recent workouts.
 
     Calculates the average speed from recent runs, then projects that speed
-    to the target distance. More robust for extrapolating to different distances.
+    to the target distance.
 
     Args:
         times: List of segment durations in seconds
@@ -207,43 +246,29 @@ def estimate_speed_based(
         return float("inf")
 
     count = min(10, len(times))
-    recent_times = times[:count]
-    recent_dists = (
-        distances[:count]
-        if len(distances) >= count
-        else distances + [distances[-1]] * (count - len(distances))
-    )
-    recent_dates = dates[:count]
-
+    recent_dists = _prepare_distance_list(distances, count)
     valid_data: List[Tuple[float, float, datetime]] = [
         (t, d, dt)
-        for t, d, dt in zip(recent_times, recent_dists, recent_dates)
+        for t, d, dt in zip(times[:count], recent_dists, dates[:count])
         if dt is not None and t > 0 and d > 0
     ]
 
     if len(valid_data) < 2:
         return float("inf")
 
-    # Calculate speeds and weights
     speeds: List[float] = []
     weights: List[float] = []
-
     for t, d, dt in valid_data:
-        pace_kmh = _calculate_pace_kmh(t, d)
-        if pace_kmh > 0:
-            speeds.append(pace_kmh)
-            days_ago = _time_since_days(dt)
-            if not math.isinf(days_ago):
-                weight = 2.0 ** (-days_ago / decay_half_life_days)
-            else:
-                weight = 0.0
+        result = _calculate_speed_and_weight(t, d, dt, decay_half_life_days)
+        if result is not None:
+            speed, weight = result
+            speeds.append(speed)
             weights.append(weight)
 
-    if not speeds or not weights or sum(weights) == 0:
+    if not speeds or sum(weights) == 0:
         return float("inf")
-
-    weighted_avg_speed = sum(s * w for s, w in zip(speeds, weights)) / sum(weights)
-    return _calculate_duration_from_pace(target_distance, weighted_avg_speed)
+    avg_speed = _compute_weighted_speed(speeds, weights)
+    return _calculate_duration_from_pace(target_distance, avg_speed) if avg_speed > 0 else float("inf")
 
 
 def estimate_percentile_based(
@@ -377,6 +402,20 @@ def estimate_optimal_time(
     return est
 
 
+def _get_improvement_level(improvement_percent: float) -> str | None:
+    """Get improvement level string based on percentage.
+    
+    Returns confidence string or None if strong improvement category.
+    """
+    if improvement_percent <= 1.0:
+        return "(flat/recovery trend)"
+    if improvement_percent <= 3.0:
+        return "(modest improvement)"
+    if improvement_percent <= 5.0:
+        return "(steady improvement)"
+    return None
+
+
 def format_estimation_confidence(
     estimated_time: float,
     best_observed_time: float,
@@ -392,21 +431,12 @@ def format_estimation_confidence(
     Returns:
         Confidence label with improvement indicator
     """
-    # Use best and estimated time to qualify the message further
-    delta = (
-        best_observed_time - estimated_time
-        if best_observed_time and estimated_time
-        else 0.0
-    )
-    if improvement_percent <= 1.0:
-        return "(flat/recovery trend)"
-    if improvement_percent <= 3.0:
-        return "(modest improvement)"
-    if improvement_percent <= 5.0:
-        return "(steady improvement)"
+    level = _get_improvement_level(improvement_percent)
+    if level is not None:
+        return level
 
-    # strong improvement: if estimated is substantially better than best
-    if delta / best_observed_time > 0.10 if best_observed_time else False:
+    delta = best_observed_time - estimated_time if best_observed_time and estimated_time else 0.0
+    if best_observed_time and delta / best_observed_time > 0.10:
         return "(strong improvement — optimistic)"
     return "(strong upward trend)"
 
