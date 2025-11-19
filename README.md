@@ -60,6 +60,8 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
 
 ✅ **Format support** - Apple Health Route XML and GPX files
 
+✅ **Performance trend estimation** - Get estimated optimal times based on recent performance
+
 ## Example Usage
 
 ### Find your fastest 5km times in 2024
@@ -218,6 +220,4 @@ For maintainers creating releases:
 ## Support
 
 - Check [tools/README.md](tools/README.md) for usage details
-- See [TESTING.md](TESTING.md) for running tests
-- Review [TEST_SUMMARY.md](TEST_SUMMARY.md) for test coverage info
 - View [CHANGELOG.md](CHANGELOG.md) for version history
