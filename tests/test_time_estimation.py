@@ -22,9 +22,17 @@ from time_estimation import (  # type: ignore  # noqa: E402
     estimate_speed_based,
     estimate_percentile_based,
     format_estimation_confidence,
+    create_estimation_summary,
     _calculate_pace_kmh,
     _calculate_duration_from_pace,
     _time_since_days,
+    _compute_linear_regression,
+    _extrapolate_trend,
+    _prepare_distance_list,
+    _calculate_speed_and_weight,
+    _compute_weighted_speed,
+    _derive_distances,
+    _get_improvement_level,
 )
 
 
@@ -313,3 +321,280 @@ class TestConfidenceFormatting:
         """Test formatting for strong improvement."""
         conf = format_estimation_confidence(90.0, 100.0, 10.0)
         assert "strong" in conf or "upward" in conf
+
+
+class TestLinearRegression:
+    """Test linear regression helper functions."""
+
+    def test_compute_linear_regression_positive_slope(self) -> None:
+        """Test linear regression with positive slope."""
+        x_vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+        y_vals = [2.0, 4.0, 6.0, 8.0, 10.0]  # y = 2x
+        slope, _ = _compute_linear_regression(x_vals, y_vals)
+        assert abs(slope - 2.0) < 0.01
+
+    def test_compute_linear_regression_negative_slope(self) -> None:
+        """Test linear regression with negative slope."""
+        x_vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+        y_vals = [10.0, 8.0, 6.0, 4.0, 2.0]  # y = -2x + 12
+        slope, _ = _compute_linear_regression(x_vals, y_vals)
+        assert slope < 0
+        assert abs(slope + 2.0) < 0.01
+
+    def test_compute_linear_regression_zero_denominator(self) -> None:
+        """Test linear regression with constant x values."""
+        x_vals = [1.0, 1.0, 1.0]
+        y_vals = [2.0, 3.0, 4.0]
+        slope, _ = _compute_linear_regression(x_vals, y_vals)
+        assert abs(slope - 0.0) < 0.001
+
+    def test_extrapolate_trend_negative_slope(self) -> None:
+        """Test trend extrapolation with improving trend."""
+        estimated = _extrapolate_trend(slope=-2.0, intercept=100.0, min_observed=110.0)
+        # When slope < 0, returns max(min_observed * 0.90, min(optimal, min_observed))
+        # = max(99.0, min(100.0, 110.0)) = max(99.0, 100.0) = 100.0
+        assert abs(estimated - 100.0) < 0.001
+        assert estimated >= 99.0
+
+    def test_extrapolate_trend_positive_slope(self) -> None:
+        """Test trend extrapolation with worsening trend."""
+        estimated = _extrapolate_trend(slope=2.0, intercept=100.0, min_observed=110.0)
+        assert abs(estimated - 110.0) < 0.001
+
+    def test_extrapolate_trend_zero_slope(self) -> None:
+        """Test trend extrapolation with flat trend."""
+        estimated = _extrapolate_trend(slope=0.0, intercept=100.0, min_observed=110.0)
+        assert abs(estimated - 110.0) < 0.001
+
+
+class TestHelperFunctions:
+    """Test utility helper functions."""
+
+    def test_prepare_distance_list_sufficient(self) -> None:
+        """Test distance list preparation with sufficient data."""
+        distances = [1000.0, 1100.0, 1200.0, 1300.0]
+        result = _prepare_distance_list(distances, 2)
+        assert result == [1000.0, 1100.0]
+
+    def test_prepare_distance_list_padding(self) -> None:
+        """Test distance list preparation with padding."""
+        distances = [1000.0]
+        result = _prepare_distance_list(distances, 3)
+        assert len(result) == 3
+        assert result == [1000.0, 1000.0, 1000.0]
+
+    def test_calculate_speed_and_weight_valid(self) -> None:
+        """Test speed and weight calculation with valid data."""
+        now = datetime.now()
+        result = _calculate_speed_and_weight(300.0, 1000.0, now, decay_half_life_days=30.0)
+        assert result is not None
+        speed, weight = result
+        assert speed > 0
+        assert weight > 0
+
+    def test_calculate_speed_and_weight_zero_pace(self) -> None:
+        """Test speed and weight calculation with zero pace."""
+        now = datetime.now()
+        result = _calculate_speed_and_weight(0.0, 1000.0, now, decay_half_life_days=30.0)
+        assert result is None
+
+    def test_calculate_speed_and_weight_none_date(self) -> None:
+        """Test speed and weight calculation with None date."""
+        result = _calculate_speed_and_weight(300.0, 1000.0, None, decay_half_life_days=30.0)
+        assert result is not None
+        _, weight = result
+        assert abs(weight - 0.0) < 0.001
+
+    def test_compute_weighted_speed_basic(self) -> None:
+        """Test weighted speed computation."""
+        speeds = [10.0, 12.0, 14.0]
+        weights = [1.0, 1.0, 1.0]
+        avg = _compute_weighted_speed(speeds, weights)
+        assert abs(avg - 12.0) < 0.01
+
+    def test_compute_weighted_speed_unequal_weights(self) -> None:
+        """Test weighted speed with different weights."""
+        speeds = [10.0, 20.0]
+        weights = [3.0, 1.0]  # 10 gets 3x weight
+        avg = _compute_weighted_speed(speeds, weights)
+        assert avg < 15.0
+
+    def test_compute_weighted_speed_zero_weight(self) -> None:
+        """Test weighted speed with zero total weight."""
+        speeds = [10.0, 12.0]
+        weights = [0.0, 0.0]
+        avg = _compute_weighted_speed(speeds, weights)
+        assert abs(avg - 0.0) < 0.001
+
+    def test_derive_distances_with_speed(self) -> None:
+        """Test distance derivation from speed."""
+        now = datetime.now()
+        times_and_dates = [
+            (300.0, now, 0.0, 12.0),
+            (300.0, now, 0.0, 10.0),
+        ]
+        distances = _derive_distances(times_and_dates, target_distance=5000.0)
+        assert len(distances) == 2
+        assert distances[0] > 0
+        assert distances[1] > 0
+
+    def test_derive_distances_without_speed(self) -> None:
+        """Test distance derivation falls back to target distance."""
+        now = datetime.now()
+        times_and_dates = [
+            (300.0, now, 0.0, 0.0),
+            (300.0, now, 0.0, -1.0),
+        ]
+        distances = _derive_distances(times_and_dates, target_distance=5000.0)
+        assert distances == [5000.0, 5000.0]
+
+    def test_get_improvement_level_flat(self) -> None:
+        """Test improvement level for flat performance."""
+        level = _get_improvement_level(0.5)
+        assert level == "(flat/recovery trend)"
+
+    def test_get_improvement_level_modest(self) -> None:
+        """Test improvement level for modest improvement."""
+        level = _get_improvement_level(2.0)
+        assert level == "(modest improvement)"
+
+    def test_get_improvement_level_steady(self) -> None:
+        """Test improvement level for steady improvement."""
+        level = _get_improvement_level(4.0)
+        assert level == "(steady improvement)"
+
+    def test_get_improvement_level_strong(self) -> None:
+        """Test improvement level for strong improvement."""
+        level = _get_improvement_level(10.0)
+        assert level is None
+
+
+class TestEstimationSummary:
+    """Test estimation summary creation."""
+
+    def test_create_estimation_summary_single_distance(self) -> None:
+        """Test summary creation for single distance."""
+        now = datetime.now()
+        results = {
+            5000.0: [
+                (300.0, now - timedelta(days=10), 0.0, 12.0),
+                (295.0, now - timedelta(days=5), 0.0, 12.1),
+                (290.0, now, 0.0, 12.2),
+            ]
+        }
+        summary = create_estimation_summary(results)
+        assert 5000.0 in summary
+        assert summary[5000.0]["count"] == 3
+        assert abs(summary[5000.0]["best"] - 300.0) < 0.001
+
+    def test_create_estimation_summary_insufficient_data(self) -> None:
+        """Test summary creation with insufficient data."""
+        results = {
+            5000.0: [
+                (300.0, datetime.now(), 0.0, 12.0),
+            ]
+        }
+        summary = create_estimation_summary(results)
+        assert summary[5000.0]["optimal"] is None
+        assert "insufficient" in summary[5000.0]["confidence"]
+
+    def test_create_estimation_summary_multiple_distances(self) -> None:
+        """Test summary creation for multiple distances."""
+        now = datetime.now()
+        results = {
+            5000.0: [
+                (300.0, now - timedelta(days=10), 0.0, 12.0),
+                (295.0, now, 0.0, 12.1),
+            ],
+            10000.0: [
+                (600.0, now - timedelta(days=10), 0.0, 12.0),
+                (595.0, now, 0.0, 12.1),
+            ]
+        }
+        summary = create_estimation_summary(results)
+        assert len(summary) == 2
+        assert 5000.0 in summary
+        assert 10000.0 in summary
+
+    def test_create_estimation_summary_empty_results(self) -> None:
+        """Test summary creation with empty results."""
+        summary = create_estimation_summary({})
+        assert summary == {}
+
+
+class TestEdgeCases:
+    """Test edge cases and boundary conditions."""
+
+    def test_estimate_trend_linear_with_no_dates(self) -> None:
+        """Test linear estimation when all dates are None."""
+        times = [100.0, 95.0, 90.0]
+        dates = [None, None, None]
+        estimated = estimate_trend_linear(times, dates)
+        assert math.isinf(estimated)
+
+    def test_estimate_weighted_recent_single_date(self) -> None:
+        """Test weighted recent with mostly None dates."""
+        times = [100.0, 95.0, 90.0, 85.0, 80.0, 75.0]
+        now = datetime.now()
+        dates = [None, None, None, None, None, now]
+        estimated = estimate_weighted_recent(times, dates)
+        # With only one valid date (all others are None with inf days), result is inf
+        # because other weights become 0 and total_weight = 0
+        assert math.isinf(estimated)
+
+    def test_estimate_percentile_empty_times(self) -> None:
+        """Test percentile estimation with empty times."""
+        estimated = estimate_percentile_based([], percentile=50.0)
+        assert math.isinf(estimated)
+
+    def test_pace_calculations_boundary(self) -> None:
+        """Test pace calculations at boundaries."""
+        # Very small distance
+        pace = _calculate_pace_kmh(300.0, 0.001)
+        assert pace > 0
+
+    def test_duration_from_pace_very_small(self) -> None:
+        """Test duration calculation with very small pace."""
+        duration = _calculate_duration_from_pace(10000.0, 0.1)
+        assert duration > 0
+        assert not math.isinf(duration)
+
+
+class TestEstimateStrategies:
+    """Test different estimation strategies."""
+
+    def test_estimate_optimal_weighted_strategy(self) -> None:
+        """Test optimal estimation with weighted strategy."""
+        now = datetime.now()
+        times_and_dates = [
+            (300.0, now - timedelta(days=60), 0.0, 12.0),
+            (295.0, now - timedelta(days=30), 0.0, 12.1),
+            (290.0, now - timedelta(days=10), 0.0, 12.2),
+        ]
+        estimated = estimate_optimal_time(times_and_dates, 1000.0, strategy="weighted")
+        if estimated is not None:
+            assert estimated < 300.0
+
+    def test_estimate_optimal_speed_strategy(self) -> None:
+        """Test optimal estimation with speed strategy."""
+        now = datetime.now()
+        times_and_dates = [
+            (300.0, now - timedelta(days=30), 0.0, 12.0),
+            (295.0, now - timedelta(days=15), 0.0, 12.1),
+            (290.0, now, 0.0, 12.2),
+        ]
+        estimated = estimate_optimal_time(times_and_dates, 1000.0, strategy="speed")
+        if estimated is not None:
+            assert estimated > 0
+
+    def test_estimate_optimal_median_strategy(self) -> None:
+        """Test optimal estimation with median strategy."""
+        now = datetime.now()
+        times_and_dates = [
+            (300.0, now - timedelta(days=30), 0.0, 12.0),
+            (295.0, now - timedelta(days=15), 0.0, 12.1),
+            (290.0, now, 0.0, 12.2),
+        ]
+        estimated = estimate_optimal_time(times_and_dates, 1000.0, strategy="median")
+        if estimated is not None:
+            assert estimated > 0
