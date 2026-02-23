@@ -353,8 +353,7 @@ def _estimate_by_name(
     if name == "median":
         return estimate_percentile_based(times, percentile=50.0)
     return None
-
-
+    return None
 def _ensemble_estimate(
     times: List[float],
     dates: List[datetime | None],
