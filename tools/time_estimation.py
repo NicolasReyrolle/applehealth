@@ -189,6 +189,14 @@ def estimate_weighted_recent(
 
 def _prepare_distance_list(distances: List[float], required_count: int) -> List[float]:
     """Prepare distance list by padding with last value if necessary."""
+    # Handle empty input explicitly to avoid IndexError on distances[-1]
+    if not distances:
+        if required_count <= 0:
+            return []
+        raise ValueError(
+            "distances list cannot be empty when required_count is positive; "
+            "cannot pad using the last distance value."
+        )
     if not distances:
         if required_count <= 0:
             return []
