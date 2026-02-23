@@ -138,9 +138,9 @@ The final estimate is the **average of these three methods**, giving a balanced 
 ```text
 Distance: 5 km
   Estimated optimal:  00:25:15  (steady improvement)
-    1. 08/08/2024  00:25:30
-    2. 24/04/2025  00:25:45
-    3. 30/03/2025  00:26:02
+    1. DD/MM/YYYY  00:25:30
+    2. DD/MM/YYYY  00:25:45
+    3. DD/MM/YYYY  00:26:02
 ```
 
 The "Estimated optimal" line shows:

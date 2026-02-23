@@ -182,13 +182,20 @@ def estimate_weighted_recent(
         return float("inf")
 
     weighted_avg = (
-        sum(t * w for t, w in zip([t for t, _ in valid_pairs], weights)) / total_weight
+        sum(t * w for (t, _), w in zip(valid_pairs, weights)) / total_weight
     )
     return weighted_avg
 
 
 def _prepare_distance_list(distances: List[float], required_count: int) -> List[float]:
     """Prepare distance list by padding with last value if necessary."""
+    if not distances:
+        if required_count <= 0:
+            return []
+        raise ValueError(
+            "distances list cannot be empty when required_count is positive; "
+            "cannot pad using the last distance value."
+        )
     if len(distances) >= required_count:
         return distances[:required_count]
     return distances + [distances[-1]] * (required_count - len(distances))
@@ -301,13 +308,11 @@ def estimate_percentile_based(
     count = min(15, len(times))
     recent = sorted(times[:count])
 
-    # Calculate percentile position
+    # Clamp percentile to [0, 100] and calculate percentile position
+    percentile = max(0.0, min(100.0, percentile))
     pos = (percentile / 100.0) * (len(recent) - 1)
     lower_idx = int(pos)
     upper_idx = min(lower_idx + 1, len(recent) - 1)
-
-    if lower_idx >= len(recent):
-        return recent[-1]
 
     # Linear interpolation between values
     frac = pos - lower_idx
@@ -347,6 +352,7 @@ def _estimate_by_name(
         return estimate_speed_based(times, distances, dates, target_distance)
     if name == "median":
         return estimate_percentile_based(times, percentile=50.0)
+    return None
 
 
 def _ensemble_estimate(
