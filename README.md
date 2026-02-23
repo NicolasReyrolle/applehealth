@@ -26,18 +26,6 @@ python tools/apple_health_segments.py --zip "path\to\export.zip" --top 5
   - GPS error handling
   - Examples and troubleshooting
 
-### Testing
-
-- **[TESTING.md](TESTING.md)** - How to run tests
-  - Test commands
-  - Coverage reports
-  - Test structure overview
-
-- **[TEST_SUMMARY.md](TEST_SUMMARY.md)** - Implementation details
-  - 44 tests covering all major functionality
-  - 64% code coverage of main tool
-  - Test design and organization
-
 ### Development
 
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
@@ -105,8 +93,6 @@ applehealth/
 │   └── README.md                   # User documentation
 ├── tests/
 │   └── test_apple_health_segments.py  # 44 comprehensive tests
-├── TESTING.md                      # Testing guide
-├── TEST_SUMMARY.md                 # Test implementation details
 └── README.md                       # This file
 ```
 
