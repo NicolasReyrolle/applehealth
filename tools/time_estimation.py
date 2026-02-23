@@ -197,13 +197,6 @@ def _prepare_distance_list(distances: List[float], required_count: int) -> List[
             "distances list cannot be empty when required_count is positive; "
             "cannot pad using the last distance value."
         )
-    if not distances:
-        if required_count <= 0:
-            return []
-        raise ValueError(
-            "distances list cannot be empty when required_count is positive; "
-            "cannot pad using the last distance value."
-        )
     if len(distances) >= required_count:
         return distances[:required_count]
     return distances + [distances[-1]] * (required_count - len(distances))
@@ -361,7 +354,8 @@ def _estimate_by_name(
     if name == "median":
         return estimate_percentile_based(times, percentile=50.0)
     return None
-    return None
+
+
 def _ensemble_estimate(
     times: List[float],
     dates: List[datetime | None],

@@ -8,6 +8,7 @@ import os
 # pylint: disable=import-error,wrong-import-position,protected-access
 
 import math
+import pytest
 from datetime import datetime, timedelta
 
 # Add tools directory to path before importing time_estimation
@@ -33,6 +34,7 @@ from time_estimation import (  # type: ignore  # noqa: E402
     _compute_weighted_speed,
     _derive_distances,
     _get_improvement_level,
+    _estimate_by_name,
 )
 
 
@@ -598,3 +600,116 @@ class TestEstimateStrategies:
         estimated = estimate_optimal_time(times_and_dates, 1000.0, strategy="median")
         if estimated is not None:
             assert estimated > 0
+
+
+class TestEstimateByName:
+    """Test _estimate_by_name dispatch function."""
+
+    def test_estimate_by_name_unknown_strategy_returns_none(self) -> None:
+        """Test that unknown strategy name returns None."""
+        now = datetime.now()
+        times = [300.0, 295.0, 290.0]
+        dates = [now - timedelta(days=30), now - timedelta(days=15), now]
+        distances = [1000.0, 1000.0, 1000.0]
+        result = _estimate_by_name("unknown", times, dates, distances, 1000.0)
+        assert result is None
+
+    def test_estimate_by_name_empty_string_returns_none(self) -> None:
+        """Test that empty string strategy name returns None."""
+        now = datetime.now()
+        times = [300.0, 295.0, 290.0]
+        dates = [now - timedelta(days=30), now - timedelta(days=15), now]
+        distances = [1000.0, 1000.0, 1000.0]
+        result = _estimate_by_name("", times, dates, distances, 1000.0)
+        assert result is None
+
+    def test_estimate_by_name_linear_dispatches_correctly(self) -> None:
+        """Test that 'linear' strategy dispatches to estimate_trend_linear."""
+        now = datetime.now()
+        times = [100.0, 95.0, 90.0, 85.0, 80.0]
+        dates = [now - timedelta(days=i * 10) for i in range(5)]
+        distances = [1000.0] * 5
+        result = _estimate_by_name("linear", times, dates, distances, 1000.0)
+        expected = estimate_trend_linear(times, dates, 1000.0)
+        assert result == expected
+
+    def test_estimate_by_name_weighted_dispatches_correctly(self) -> None:
+        """Test that 'weighted' strategy dispatches to estimate_weighted_recent."""
+        now = datetime.now()
+        times = [100.0, 95.0, 90.0]
+        dates = [now - timedelta(days=i * 10) for i in range(3)]
+        distances = [1000.0] * 3
+        result = _estimate_by_name("weighted", times, dates, distances, 1000.0)
+        expected = estimate_weighted_recent(times, dates, 1000.0)
+        assert result is not None and not math.isinf(result)
+        assert math.isclose(result, expected, rel_tol=1e-6)
+
+    def test_estimate_by_name_speed_dispatches_correctly(self) -> None:
+        """Test that 'speed' strategy dispatches to estimate_speed_based."""
+        now = datetime.now()
+        times = [300.0, 295.0, 290.0]
+        dates = [now - timedelta(days=i * 10) for i in range(3)]
+        distances = [1000.0] * 3
+        result = _estimate_by_name("speed", times, dates, distances, 1000.0)
+        expected = estimate_speed_based(times, distances, dates, 1000.0)
+        assert result is not None and not math.isinf(result)
+        assert math.isclose(result, expected, rel_tol=1e-6)
+
+    def test_estimate_by_name_median_dispatches_correctly(self) -> None:
+        """Test that 'median' strategy dispatches to estimate_percentile_based."""
+        now = datetime.now()
+        times = [100.0, 95.0, 90.0]
+        dates = [now - timedelta(days=i * 10) for i in range(3)]
+        distances = [1000.0] * 3
+        result = _estimate_by_name("median", times, dates, distances, 1000.0)
+        expected = estimate_percentile_based(times, percentile=50.0)
+        assert result == expected
+
+
+class TestPrepareDistanceListEdgeCases:
+    """Test _prepare_distance_list edge cases from PR review fixes."""
+
+    def test_prepare_distance_list_empty_positive_required(self) -> None:
+        """Test that empty list with positive required_count raises ValueError."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            _prepare_distance_list([], 3)
+
+    def test_prepare_distance_list_empty_zero_required(self) -> None:
+        """Test that empty list with required_count=0 returns empty list."""
+        result = _prepare_distance_list([], 0)
+        assert result == []
+
+    def test_prepare_distance_list_empty_negative_required(self) -> None:
+        """Test that empty list with negative required_count returns empty list."""
+        result = _prepare_distance_list([], -1)
+        assert result == []
+
+
+class TestPercentileBasedClamping:
+    """Test percentile clamping behaviour added in PR review fix."""
+
+    def test_percentile_below_zero_clamped_to_minimum(self) -> None:
+        """Test that percentile below 0 is clamped to 0 (minimum value)."""
+        times = [80.0, 85.0, 90.0, 95.0, 100.0]
+        result_clamped = estimate_percentile_based(times, percentile=-10.0)
+        result_zero = estimate_percentile_based(times, percentile=0.0)
+        assert result_clamped == result_zero
+
+    def test_percentile_above_100_clamped_to_maximum(self) -> None:
+        """Test that percentile above 100 is clamped to 100 (maximum value)."""
+        times = [80.0, 85.0, 90.0, 95.0, 100.0]
+        result_clamped = estimate_percentile_based(times, percentile=110.0)
+        result_max = estimate_percentile_based(times, percentile=100.0)
+        assert result_clamped == result_max
+
+    def test_percentile_zero_returns_minimum(self) -> None:
+        """Test that percentile=0 returns the minimum value."""
+        times = [80.0, 85.0, 90.0, 95.0, 100.0]
+        result = estimate_percentile_based(times, percentile=0.0)
+        assert abs(result - 80.0) < 0.001
+
+    def test_percentile_100_returns_maximum(self) -> None:
+        """Test that percentile=100 returns the maximum value."""
+        times = [80.0, 85.0, 90.0, 95.0, 100.0]
+        result = estimate_percentile_based(times, percentile=100.0)
+        assert abs(result - 100.0) < 0.001
