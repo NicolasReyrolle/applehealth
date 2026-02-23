@@ -295,6 +295,7 @@ def estimate_percentile_based(
 
     Args:
         times: List of segment durations in seconds
+        dates: Kept for API compatibility; not used in percentile calculation
         percentile: Percentile to use (50=median, 75=conservative, 25=optimistic)
 
     Returns:
