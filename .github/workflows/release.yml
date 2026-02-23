@@ -100,7 +100,7 @@ jobs:
           cat release_notes.md
       
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.4.2
+        uses: softprops/action-gh-release@v2.5.0
         with:
           name: Release ${{ steps.get_version.outputs.tag }}
           body_path: release_notes.md
@@ -165,7 +165,7 @@ jobs:
           python setup.py sdist bdist_wheel
       
       - name: Upload release artifacts
-        uses: softprops/action-gh-release@v2.4.2
+        uses: softprops/action-gh-release@v2.5.0
         with:
           files: |
             dist/*.tar.gz
